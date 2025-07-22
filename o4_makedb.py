@@ -9,6 +9,10 @@ import tiktoken
 import chromadb
 import hashlib
 from collections import defaultdict, Counter
+import lizard
+from pathlib import Path
+
+CPP_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".hxx"}
 
 MAX_ITEM_TOKENS   = 7800           # < 8192 to leave headroom
 MAX_REQUEST_TOKENS= 7800
@@ -25,81 +29,133 @@ client_oa = OpenAI()
 def token_len(txt: str) -> int:
     return len(enc.encode(txt))
 
+def short_hash(text: str, length=8) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()[:length]
+
 def split_by_tokens(txt: str, max_tokens: int) -> list[str]:
     toks = enc.encode(txt)
     return [enc.decode(toks[i:i+max_tokens]) for i in range(0, len(toks), max_tokens)]
 
-# 1) Load C++ grammar
-CPP = Language(tscpp.language())
-parser = Parser(CPP)
-
-def debug_node_types(node, depth=0):
-    print("  " * depth + f"{node.type}")
-    for child in node.children:
-        debug_node_types(child, depth + 1)
-
-
-def extract_chunks_from_file(path, max_tokens=800, overlap=100):
-    source = open(path, "rb").read()
-    tree   = parser.parse(source)
-    root   = tree.root_node
-#    debug_node_types(root)
-
-    chunks = []
-#    interesting_types = ( "comment", "function_definition", "class_specifier", "struct_specifier",
-#        "namespace_definition", "enum_specifier", "union_specifier",
-#        "template_declaration", "constructor_definition", "destructor_definition")
-    interesting_types = ["constructor_definition"]
-
-    # Recursively walk to find top-level function/class nodes
-    def walk(node):
-        if node.type in interesting_types:
-            start, end = node.start_point[0], node.end_point[0]
-            text = source[node.start_byte:node.end_byte].decode()
-            if 'Copyright' in text:
-                return
-            tok_count = len(enc.encode(text))
-            # if too big, fall back to sliding window
-            if tok_count <= max_tokens:
-                chunks.append((start+1,end+1,text,node))
-            else:
-                # sliding window on lines
-                lines = text.splitlines()
-                for i in range(0, len(lines), max_tokens - overlap):
-                    window = "\n".join(lines[i:i+max_tokens])
-                    chunks.append((start+i+1, start+i+1+len(lines[i:i+max_tokens]), window, node))
+def grab_leading_comment(lines, start_idx, max_gap=2):
+    """
+    Walk upward from start_idx-1 to collect a contiguous block of comments
+    separated from code by <= max_gap blank lines.
+    """
+    i = start_idx - 1
+    collected = []
+    blanks = 0
+    while i >= 0:
+        line = lines[i].rstrip()
+        if line.strip().startswith("//") or "/*" in line:
+            collected.append(lines[i])
+            blanks = 0
+        elif line.strip() == "":
+            blanks += 1
+            if blanks > max_gap:
+                break
+            collected.append(lines[i])
         else:
-            for c in node.children:
-                walk(c)
+            break
+        i -= 1
+    collected.reverse()
+    return collected
 
-    walk(root)
+def slice_lines(lines, start, end):
+    return "\n".join(lines[start-1:end])
+
+def build_leftover_chunks(lines, used_spans, file_path):
+    """Anything not covered by functions becomes its own chunk (contiguous blocks)."""
+    n = len(lines)
+    covered = [False]*(n+1)
+    for s,e in used_spans:
+        for i in range(s, e+1):
+            if 0 < i <= n:
+                covered[i] = True
+    chunks = []
+    i = 1
+    while i <= n:
+        if covered[i]:
+            i += 1
+            continue
+        j = i
+        while j <= n and not covered[j]:
+            j += 1
+        text = slice_lines(lines, i, j-1)
+        if text.strip():
+            cid = f"{Path(file_path).name}:{i}-{j-1}-{short_hash(text)}"
+            chunks.append({
+                "id": cid,
+                "text": text,
+                "metadata": {
+                    "file_path": file_path,
+                    "start_line": i,
+                    "end_line": j-1,
+                    "node_type": "leftover_block"
+                }
+            })
+        i = j
     return chunks
 
+def extract_chunks_with_lizard(path, include_comments=True):
+    """Return list[{id,text,metadata}] for a single file."""
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = f.readlines()
+    src = "".join(lines)
 
-def simple_hash_text(text: str) -> str:
-    h = hashlib.new('md5')
-    h.update(text.encode('utf-8'))
-    return h.hexdigest()[:8] # return first 8 chars of MD5
+    try:
+        res = lizard.analyze_file(path)
+    except Exception as e:
+        print(f"[Lizard] Failed to analyze {path}: {e}")
+        return []
 
-# Example usage:
-all_chunks = []
-for root_dir, _, files in os.walk(SOURCES_FULL_PATH):
-    for fn in files:
-        if fn.endswith((".cpp",".h")):
-            path = os.path.join(root_dir, fn)
-            for start_line,end_line,text,node in extract_chunks_from_file(path):
-                all_chunks.append({
-                    "id": f"{fn}:{start_line}-{end_line}:{simple_hash_text(text)}",
-                    "text": text,
-                    "metadata": {
-                       "file_path": path,
-                       "start_line": start_line,
-                       "end_line": end_line,
-                       "node_type": node.type,
-                    }
-                })
+    chunks = []
+    spans = []
+    for fn in res.function_list:
+        sl, el = fn.start_line, fn.end_line
+        body_lines = lines[sl-1:el]
+        comment_lines = grab_leading_comment(lines, sl) if include_comments else []
+        text = "".join(comment_lines + body_lines)
+        if 'Copyright' in text:
+            continue
 
+        cid = f"{Path(path).name}:{sl}-{el}-{short_hash(text)}"
+        chunks.append({
+            "id": cid,
+            "text": text,
+            "metadata": {
+                "file_path": path,
+                "start_line": sl,
+                "end_line": el,
+                "name": fn.name,
+                "long_name": fn.long_name,
+                "cyclomatic_complexity": fn.cyclomatic_complexity,
+                "nloc": fn.nloc,
+                "parameter_count": len(fn.parameters),
+                "parameters": ",".join(fn.parameters) if fn.parameters else "",
+                "node_type": "function"
+            }
+        })
+        spans.append((sl, el))
 
+    # Add non-function regions (classes, typedefs, etc.)
+    leftovers = build_leftover_chunks(lines, spans, path)
+    chunks.extend(leftovers)
+
+    return chunks
+
+def walk_repo_and_chunk(root_dir):
+    all_chunks = []
+    for dirpath, _, files in os.walk(root_dir):
+        count = 0
+        for name in files:
+            if os.path.splitext(name)[1].lower() in CPP_EXTS:
+                p = os.path.join(dirpath, name)
+                all_chunks.extend(extract_chunks_with_lizard(p))
+                count+=1
+                print(f"{count}/{len(files)} files chunked")
+    return all_chunks
+
+all_chunks = walk_repo_and_chunk(SOURCES_FULL_PATH)
 print(f"All {len(all_chunks)} chunks collected.")
 
 import chromadb

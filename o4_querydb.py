@@ -68,7 +68,8 @@ def cli_main():
                        default="",
                        help="The query text.")
     args = parser.parse_args()
-# "Explain nb3FixedConstrait class"  # "What is Convex Decomposition function?"    
+# "Explain nb3FixedConstrait class"  # "What is Convex Decomposition function?" 
+# "In b3FixedConstraint constructor please explain frameInA argument"  
     if not args.query_text:
         query_text = "Show constructor of nb3FixedConstrait class"
     else:
