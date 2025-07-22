@@ -1,0 +1,6 @@
+dotenv
+openai
+chromadb
+tiktoken
+tree_sitter
+tree_sitter_cpp
