@@ -5,3 +5,5 @@ tiktoken
 tree_sitter
 tree_sitter_cpp
 lizard
+pypdf
+python-docx
