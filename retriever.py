@@ -2,7 +2,7 @@
 retriever.py
 --------------
 
-Query -> retrieve from multiple Chroma collections (e.g. "cpp_code" and "all_documents")
+Query -> retrieve from multiple Chroma collections (e.g. "cpp_code" and "bullet_docs")
 -> fuse results -> build a prompt/context block for an OpenAI chat model.
 
 Features
@@ -22,7 +22,7 @@ Usage
 
     client = chromadb.PersistentClient(path="./chroma_store")
     code_col = client.get_collection("cpp_code")
-    doc_col  = client.get_collection("all_documents")
+    doc_col  = client.get_collection("bullet_docs")
 
     r = Retriever(
         collections={"code": code_col, "docs": doc_col},
@@ -45,8 +45,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import tiktoken  # type: ignore
 from openai import OpenAI
 import chromadb
+from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
 from config import DOCUMENTS_PATH, SOURCES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from types import MappingProxyType
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
@@ -71,7 +73,7 @@ class RetrieverConfig:
     default_doc_lang: str = "markdown"
     show_source_header: bool = True
     # How many results (k) to fetch per collection
-    k_per_collection: int = 5
+    k_per_collection: Mapping[str,int] = MappingProxyType({"cpp_code":12, "bullet_docs":4})
     # Build messages: system / user templates
     system_template: str = (
         "You are a precise assistant for C/C++ code and project documentation. "
@@ -82,7 +84,7 @@ class RetrieverConfig:
         "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
         "Please answer using markdown, show code in fenced blocks, and include citations like (source: path:line-range)."
     )
-    use_llm_rerank: bool = False
+    use_llm_rerank: bool = True
     llm_rerank_model: str = "gpt-4o-mini"
     max_candidates_for_rerank: int = 30
     llm_rerank_max_chunk_tokens: int = 512
@@ -178,7 +180,7 @@ def _guess_block_language(hit: Hit, cfg: RetrieverConfig) -> str:
 class Retriever:
     def __init__(
         self,
-        collections: Mapping[str, chromadb.api.models.Collection.Collection],
+        collections: Mapping[str, ChromaCollection],
         config: Optional[RetrieverConfig] = None,
         openai_client: Optional[OpenAI] = None,
     ) -> None:
@@ -214,17 +216,18 @@ class Retriever:
     def retrieve(
         self,
         query: str,
-        k_per_collection: Optional[int] = None,
+        k_per_collection: Optional[Mapping[str,int]] = None,
         where_filters: Optional[Mapping[str, Dict[str, Any]]] = None,  # not used yet but could be
     ) -> List[Hit]:
         """Embed + query all collections + fuse.
         where_filters: dict name -> where filter
         """
-        k = k_per_collection or self.cfg.k_per_collection
+        kcol = k_per_collection or self.cfg.k_per_collection
         q_emb = self.embed_query(query)
 
         per_col_hits: List[List[Hit]] = []
         for name, col in self.collections.items():
+            k = kcol.get(name, 5)
             hits = self._query_one(name, col, q_emb, k)
             per_col_hits.append(hits)
 
@@ -272,7 +275,12 @@ class Retriever:
             temperature=0,
         )
         try:
-            data = json.loads(resp.choices[0].message.content)
+            # narrow Optional[str] → str
+            content = resp.choices[0].message.content
+            if content is None:
+                raise ValueError("LLM returned no content")
+            data = json.loads(content)
+
             score_map = {str(d['id']): float(d.get('score', 0)) for d in data if 'id' in d}
         except Exception:
             # Fallback to original order if parse fails
@@ -343,15 +351,14 @@ def ask_llm(query: str, retriever, model="gpt-4o-mini"):
 def _demo_cli():  # pragma: no cover
     import argparse
     parser = argparse.ArgumentParser(description="Multi-collection Chroma retriever")
-    parser.add_argument("--query", default="",help="user query")
-    parser.add_argument("--k", type=int, default=3, help="k per collection")
+    parser.add_argument("query", type=str, nargs="?", default="", help="user query text")
     args = parser.parse_args()
 
     client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
     collections_names = ["cpp_code", "bullet_docs"]
     cols = {name: client.get_collection(name) for name in collections_names}
 
-    retr = Retriever(cols, RetrieverConfig(k_per_collection=args.k))
+    retr = Retriever(cols, RetrieverConfig())
 
     #hits = retr.retrieve(args.query)
     #context, sources = retr.build_context(hits)
@@ -370,13 +377,20 @@ def _demo_cli():  # pragma: no cover
     #     print()
     if args.query:
         q=args.query
-    else:        
+    else:
 #        q = "Does Bullet3 support soft body dynamics, and if so, what are some examples?"
 #        q = "What are the primary components of a Bullet3 physics world setup?"
 #        q = "How do you create a basic rigid body in Bullet3 using the C++ API?"
 #        q="What is the purpose of the Bullet3 physics library?"
 #        q = "How do I detect collisions between objects in Bullet3?"
-        q = "What types of constraints are available in Bullet3 and how do I create a hinge joint?"
+#        q = "What types of constraints are available in Bullet3 and how do I create a hinge joint?"
+#       q = "What value of timeStep is recommended for the integration?"
+#        q = "What numerical integration method does Bullet3 use for dynamics simulation?"
+        q = "In stepSimulation() why we need to clamp the number of substeps?"
+#        q = "How can I perform raycasting using Bullet3?"
+#        q = "Explain dynamicsWorld->rayTest()"
+#        q = "What examples are provided in Bullet3 library?"
+
         pass
     answer, sources = ask_llm(q, retr)
     print(answer)
