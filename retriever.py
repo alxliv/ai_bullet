@@ -85,7 +85,7 @@ class RetrieverConfig:
         "Please answer using markdown, show code in fenced blocks, and include citations like (source: path:line-range)."
     )
     use_llm_rerank: bool = True
-    llm_rerank_model: str = "gpt-4o-mini"
+    llm_rerank_model: str = "gpt-3.5-turbo" # "gpt-4o-mini"
     max_candidates_for_rerank: int = 30
     llm_rerank_max_chunk_tokens: int = 512
 
@@ -233,7 +233,9 @@ class Retriever:
 
         fused = reciprocal_rank_fusion(per_col_hits, b=self.cfg.rrf_b)
         if self.cfg.use_llm_rerank:
+            print(f"Asking rerank from llm {self.cfg.llm_rerank_model}..")
             fused = self.llm_rerank(query, fused, top_n=self.cfg.max_snippets)
+            print("rerank received.")
         elif self.cfg.use_mmr:
             fused = mmr_select(fused, k=self.cfg.max_snippets, lambda_relevance=self.cfg.mmr_lambda)
         return fused
@@ -337,12 +339,15 @@ def ask_llm(query: str, retriever, model="gpt-4o-mini"):
     messages = retriever.build_messages(query, ctx)
 
     # 2) call OpenAI
+    print("Calling OpenAI...")
     resp = retriever.oa.chat.completions.create(
         model=model,
         messages=messages,
         temperature=0
     )
-    return resp.choices[0].message.content, sources
+    print("Got answer from OpenAI")
+    answer = resp.choices[0].message.content
+    return answer, sources
 
 # ----------------------------
 # CLI example (optional)
@@ -353,8 +358,10 @@ def _demo_cli():  # pragma: no cover
     parser = argparse.ArgumentParser(description="Multi-collection Chroma retriever")
     parser.add_argument("query", type=str, nargs="?", default="", help="user query text")
     args = parser.parse_args()
-
     client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
+    all_collections = client.list_collections()
+    print(f"All available collections in the DB: {[collection.name for collection in all_collections]}")
+
     collections_names = ["cpp_code", "bullet_docs"]
     cols = {name: client.get_collection(name) for name in collections_names}
 
@@ -386,17 +393,25 @@ def _demo_cli():  # pragma: no cover
 #        q = "What types of constraints are available in Bullet3 and how do I create a hinge joint?"
 #       q = "What value of timeStep is recommended for the integration?"
 #        q = "What numerical integration method does Bullet3 use for dynamics simulation?"
-        q = "In stepSimulation() why we need to clamp the number of substeps?"
+#        q = "In stepSimulation() why we need to clamp the number of substeps?"
 #        q = "How can I perform raycasting using Bullet3?"
 #        q = "Explain dynamicsWorld->rayTest()"
 #        q = "What examples are provided in Bullet3 library?"
+#        q = "Describe how numerical integration is performed in the physics simulation?"
+        q = "What is new in Bullet version 2.81?"
+
 
         pass
+    print("\n--- Question: ---")
+    print(q)
     answer, sources = ask_llm(q, retr)
+    print("\n==== Reply: =====")
     print(answer)
-    print("\nSources:")
-    for s in sources:
-        print(s["source"])
+    print("\n=== DONE ===")
+
+    # print("\nSources:")
+    # for s in sources:
+    #     print(s["source"])
 
 
 if __name__ == "__main__":  # pragma: no cover
