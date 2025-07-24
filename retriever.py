@@ -78,11 +78,11 @@ class RetrieverConfig:
     system_template: str = (
         "You are a precise assistant for C/C++ code and project documentation. "
         "Use only the given CONTEXT to answer. If unsure, say you don't know. "
-        "Cite sources by file path and line numbers when available."
+        "Cite sources by file path, page number and line numbers when available."
     )
     user_template: str = (
         "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
-        "Please answer using markdown, show code in fenced blocks, and include citations like (source: path:line-range)."
+        "Please answer using markdown, show code in fenced blocks, and include citations like (Source: path:page,line-range)."
     )
     use_llm_rerank: bool = True
     llm_rerank_model: str = "gpt-3.5-turbo" # "gpt-4o-mini"
@@ -100,12 +100,26 @@ class Hit:
 
     def source_label(self) -> str:
         fp = self.metadata.get("file_path") or self.metadata.get("source") or self.id
-        sl = self.metadata.get("start_line")
-        el = self.metadata.get("end_line")
-        if sl and el:
-            return f"{fp}:{sl}-{el}"
+        page = self.metadata.get("page_number")
+        start = self.metadata.get("start_line")
+        end = self.metadata.get("end_line")
+        if "BulletQuickstart.pdf" in fp:
+            print(".")
+        # collect non‐empty location parts
+        parts: List[str] = []
+        if page:
+            parts.append(f"p {page}")
+        if start and end and (start!=end):
+            parts.append(f"{start}-{end}")
+        else:
+            if start:
+                parts.append(str(start))
+            elif end:
+                parts.append(str(end))
+        # join everything or just return the file path if no parts
+        if parts:
+            return f"{fp} : {', '.join(parts)}"
         return str(fp)
-
 
 # ----------------------------
 # Utility functions
@@ -409,9 +423,9 @@ def _demo_cli():  # pragma: no cover
     print(answer)
     print("\n=== DONE ===")
 
-    # print("\nSources:")
-    # for s in sources:
-    #     print(s["source"])
+    print("\nSources:")
+    for s in sources:
+        print(s["source"])
 
 
 if __name__ == "__main__":  # pragma: no cover

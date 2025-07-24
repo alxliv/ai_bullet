@@ -30,6 +30,7 @@ from pypdf import PdfReader
 import docx
 from typing import List, Dict, Any, Iterable, Tuple, Optional
 from config import DOCUMENTS_PATH, SOURCES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from dotenv import load_dotenv
 
 # ------------- Third-party deps -------------
 import chromadb
@@ -46,6 +47,8 @@ SUPPORTED_EXTS = {".pdf", ".docx", ".md", ".markdown", ".txt"}  # add more if ne
 DOCUMENTS_FULL_PATH = os.path.expanduser(DOCUMENTS_PATH)
 SOURCES_FULL_PATH = os.path.expanduser(SOURCES_PATH)
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
+
+load_dotenv()
 
 
 _ENC = tiktoken.get_encoding("cl100k_base")
@@ -78,16 +81,18 @@ def read_txt(path: str) -> str:
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
-def read_pdf(path: str) -> List[Tuple[int, str]]:
-    """Return list[(page_number, text)]"""
+def read_pdf(path: str) -> List[Tuple[int, List[str]]]:
+    """Return list of (page_number, [lines...])"""
     reader = PdfReader(path)
-    out = []
+    out: List[Tuple[int, List[str]]] = []
     for i, page in enumerate(reader.pages):
         try:
             txt = page.extract_text() or ""
         except Exception:
             txt = ""
-        out.append((i + 1, txt))
+        # split into lines
+        lines = txt.splitlines()
+        out.append((i + 1, lines))
     return out
 
 def read_docx(path: str) -> str:
@@ -160,38 +165,38 @@ def chunk_markdown(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS) -> I
                 },
             }
 
-def chunk_pdf_pages(pages: List[Tuple[int, str]], path: str, max_tokens: int = MAX_ITEM_TOKENS) -> Iterable[Dict[str, Any]]:
-    for page_no, txt in pages:
-        if not txt.strip():
-            continue
-        if token_len(txt) <= max_tokens:
-            cid = f"{path}:p{page_no}-{short_hash(txt)}"
+
+def chunk_pdf_pages(
+    pages: List[Tuple[int, List[str]]],
+    path: str,
+    max_lines: int = 50
+) -> Iterable[Dict[str, Any]]:
+    """
+    Instead of token-chunks, we do fixed line-chunks here.
+    You can tune max_lines to your needs.
+    """
+    for page_no, lines in pages:
+        # slide over the page in windows of max_lines
+        for i in range(0, len(lines), max_lines):
+            block = lines[i : i + max_lines]
+            text = "\n".join(block).strip()
+            if not text:
+                continue
+            start_line = i + 1
+            end_line = i + len(block)
+            cid = f"{path}:p{page_no}-l{start_line}-{end_line}-{short_hash(text)}"
             yield {
                 "id": cid,
-                "text": txt,
+                "text": text,
                 "metadata": {
                     "file_path": path,
-                    "page": page_no,
                     "source_type": "doc",
                     "format": "pdf",
+                    "page_number": page_no,
+                    "start_line": start_line,
+                    "end_line": end_line,
                 },
             }
-        else:
-            pieces = split_by_tokens(txt, max_tokens)
-            for idx, piece in enumerate(pieces):
-                cid = f"{path}:p{page_no}-{idx}-{short_hash(piece)}"
-                yield {
-                    "id": cid,
-                    "text": piece,
-                    "metadata": {
-                        "file_path": path,
-                        "page": page_no,
-                        "piece_index": idx,
-                        "source_type": "doc",
-                        "format": "pdf",
-                    },
-                }
-
 # ------------- De-dup helpers -------------
 
 def get_all_ids(col) -> set[str]:
@@ -290,7 +295,7 @@ def build_records_for_file(path: str) -> List[Dict[str, Any]]:
             return list(chunk_markdown(txt, path))
         elif ext == ".pdf":
             pages = read_pdf(path)
-            return list(chunk_pdf_pages(pages, path))
+            return list(chunk_pdf_pages(pages, path, max_lines=50))
         elif ext == ".docx":
             txt = read_docx(path)
             return list(chunk_text_generic(txt, path))
@@ -321,6 +326,7 @@ def walk_docs(root_dir: str) -> List[Dict[str, Any]]:
 def main():
 
     client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
+#    client.delete_collection(name="bullet_docs")
     col = client.get_or_create_collection(name="bullet_docs")
 
     records = walk_docs(DOCUMENTS_FULL_PATH)
