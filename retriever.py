@@ -82,9 +82,9 @@ class RetrieverConfig:
     )
     user_template: str = (
         "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
-        "Please answer using markdown, show code in fenced blocks, and include citations like (Source: path:page,line-range)."
+        "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](path) : page,line-range)."
     )
-    use_llm_rerank: bool = True
+    use_llm_rerank: bool = False
     llm_rerank_model: str = "gpt-3.5-turbo" # "gpt-4o-mini"
     max_candidates_for_rerank: int = 30
     llm_rerank_max_chunk_tokens: int = 512
@@ -103,8 +103,6 @@ class Hit:
         page = self.metadata.get("page_number")
         start = self.metadata.get("start_line")
         end = self.metadata.get("end_line")
-        if "BulletQuickstart.pdf" in fp:
-            print(".")
         # collect non‐empty location parts
         parts: List[str] = []
         if page:
@@ -251,7 +249,9 @@ class Retriever:
             fused = self.llm_rerank(query, fused, top_n=self.cfg.max_snippets)
             print("rerank received.")
         elif self.cfg.use_mmr:
+            print("asking use mmr_select()")
             fused = mmr_select(fused, k=self.cfg.max_snippets, lambda_relevance=self.cfg.mmr_lambda)
+            print("mmr_select() done.")
         return fused
 
     # --------- Context / Prompt building ---------
@@ -413,6 +413,7 @@ def _demo_cli():  # pragma: no cover
 #        q = "What examples are provided in Bullet3 library?"
 #        q = "Describe how numerical integration is performed in the physics simulation?"
         q = "What is new in Bullet version 2.81?"
+#        q = "How to compute the object AABBs?"
 
 
         pass
