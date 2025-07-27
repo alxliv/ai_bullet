@@ -1,0 +1,405 @@
+/* Base styles */
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 10px;
+    background-color: #f5f5f5;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background: white;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - 20px);
+}
+
+h1 {
+    color: #333;
+    text-align: center;
+    margin: 0 0 20px 0;
+    font-size: clamp(1.5rem, 4vw, 2.5rem);
+}
+
+.chat-history {
+    border: 1px solid #ddd;
+    padding: 15px;
+    overflow-y: auto;
+    margin-bottom: 20px;
+    background-color: #fafafa;
+    border-radius: 5px;
+    flex: 1;
+    min-height: 300px;
+    max-height: none;
+}
+
+.message {
+    margin-bottom: 15px;
+    padding: 12px;
+    border-radius: 8px;
+    word-wrap: break-word;
+    max-width: 100%;
+}
+
+.user {
+    background-color: #e3f2fd;
+    margin-left: 10%;
+    border-bottom-right-radius: 4px;
+}
+
+.assistant {
+    background-color: #f1f8e9;
+    margin-right: 10%;
+    border-bottom-left-radius: 4px;
+}
+
+.system {
+    background-color: #fff3e0;
+    font-style: italic;
+    text-align: center;
+    margin: 0 15%;
+}
+
+.controls-section {
+    margin-top: auto;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+}
+
+.input-form {
+    margin-top: 15px;
+}
+
+.model-selector {
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.model-selector label {
+    font-weight: bold;
+    white-space: nowrap;
+}
+
+.model-selector select {
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    background-color: white;
+    flex: 1;
+    min-width: 150px;
+}
+
+.input-row {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+}
+
+.input-form input[type="text"] {
+    flex: 1;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-size: 16px; /* Prevents zoom on iOS */
+}
+
+.input-form button {
+    padding: 12px 20px;
+    background-color: #1976d2;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+    min-width: 70px;
+}
+
+.input-form button:hover {
+    background-color: #1565c0;
+}
+
+.new-chat-btn {
+    padding: 8px 16px !important;
+    background-color: #4caf50 !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 5px !important;
+    cursor: pointer !important;
+    white-space: nowrap !important;
+    font-size: 14px !important;
+    margin-left: 10px !important;
+}
+
+.new-chat-btn:hover {
+    background-color: #45a049 !important;
+}
+
+/* Mobile-specific styles */
+@media (max-width: 768px) {
+    body {
+        padding: 5px;
+    }
+
+    .container {
+        padding: 15px;
+        min-height: calc(100vh - 10px);
+        border-radius: 0;
+    }
+
+    .chat-history {
+        min-height: 250px;
+        padding: 10px;
+    }
+
+    .message {
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+
+    .user {
+        margin-left: 5%;
+    }
+
+    .assistant {
+        margin-right: 5%;
+    }
+
+    .system {
+        margin: 0 8%;
+    }
+
+    .model-selector {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    .model-selector select {
+        width: 100%;
+        min-width: unset;
+    }
+
+    .new-chat-btn {
+        margin-left: 0 !important;
+        margin-top: 8px !important;
+        width: 100% !important;
+    }
+
+    .input-row {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .input-form input[type="text"] {
+        width: 100%;
+    }
+
+    .input-form button {
+        width: 100%;
+        padding: 15px;
+    }
+}
+
+/* Small mobile phones */
+@media (max-width: 480px) {
+    .container {
+        padding: 10px;
+    }
+
+    h1 {
+        font-size: 1.5rem;
+        margin-bottom: 15px;
+    }
+
+    .chat-history {
+        padding: 8px;
+        min-height: 200px;
+    }
+
+    .message {
+        padding: 8px;
+        font-size: 14px;
+    }
+
+    .user {
+        margin-left: 2%;
+    }
+
+    .assistant {
+        margin-right: 2%;
+    }
+
+    .system {
+        margin: 0 5%;
+    }
+}
+
+/* Large screens */
+@media (min-width: 1200px) {
+    .chat-history {
+        min-height: 500px;
+    }
+
+    .message {
+        max-width: 85%;
+    }
+
+    .user {
+        margin-left: 15%;
+    }
+
+    .assistant {
+        margin-right: 15%;
+    }
+}
+
+/* Loading animation styles */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.loading-spinner {
+    background: white;
+    padding: 30px;
+    border-radius: 10px;
+    text-align: center;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #1976d2;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 15px auto;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.loading-text {
+    color: #333;
+    font-weight: bold;
+}
+
+/* Markdown formatting styles */
+.markdown-content {
+    line-height: 1.6;
+}
+
+.markdown-content h1, .markdown-content h2, .markdown-content h3 {
+    margin: 15px 0 10px 0;
+    color: #333;
+}
+
+.markdown-content h1 { font-size: 1.5em; border-bottom: 2px solid #ddd; padding-bottom: 5px; }
+.markdown-content h2 { font-size: 1.3em; border-bottom: 1px solid #eee; padding-bottom: 3px; }
+.markdown-content h3 { font-size: 1.1em; }
+
+.markdown-content p {
+    margin: 10px 0;
+}
+
+.markdown-content code {
+    background-color: #f4f4f4;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    padding: 2px 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+}
+
+.markdown-content pre {
+    background-color: #f8f8f8;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    padding: 10px;
+    overflow-x: auto;
+    margin: 10px 0;
+}
+
+.markdown-content pre code {
+    background: none;
+    border: none;
+    padding: 0;
+}
+
+.markdown-content ul, .markdown-content ol {
+    margin: 10px 0;
+    padding-left: 20px;
+}
+
+.markdown-content li {
+    margin: 5px 0;
+}
+
+.markdown-content blockquote {
+    border-left: 4px solid #ddd;
+    margin: 10px 0;
+    padding-left: 15px;
+    color: #666;
+    font-style: italic;
+}
+
+.markdown-content strong {
+    font-weight: bold;
+}
+
+.markdown-content em {
+    font-style: italic;
+}
+
+/* Math formula styling */
+.MathJax {
+    font-size: 1.1em !important;
+}
+
+.MathJax_Display {
+    margin: 1em 0 !important;
+    text-align: center !important;
+}
+
+/* Ensure math formulas don't break layout */
+.message-content .MathJax {
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+/* Style for inline math */
+.message-content .MathJax[style*="display: inline"] {
+    margin: 0 0.2em !important;
+}
+
+/* Style for display math */
+.message-content .MathJax[style*="display: block"] {
+    margin: 1em auto !important;
+    display: block !important;
+}

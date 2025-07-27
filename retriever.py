@@ -368,7 +368,7 @@ class Retriever:
         ]
 
 
-def ask_llm(query: str, retriever, model="gpt-4o-mini"):
+def ask_llm(query: str, retriever, model="gpt-4o-mini", streaming=False):
     # 1) retrieve + build context
     hits = retriever.retrieve(query)
     ctx, sources = retriever.build_context(hits)
@@ -379,29 +379,39 @@ def ask_llm(query: str, retriever, model="gpt-4o-mini"):
     resp = retriever.oa.chat.completions.create(
         model=model,
         messages=messages,
+        stream=streaming,
         temperature=0
     )
-    print("Got answer from OpenAI")
+    if streaming:
+        print("Start stream from OpenAI")
+        return resp, sources
+    else:
+        print("Got answer from OpenAI")
+
     answer = resp.choices[0].message.content
     return answer, sources
+
 
 # ----------------------------
 # CLI example (optional)
 # ----------------------------
+def create_retriever():
+    client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
+    all_collections = client.list_collections()
+    print(f"All available collections in the DB: {[collection.name for collection in all_collections]}")
+    collections_names = ["cpp_code", "bullet_docs"]
+    cols = {name: client.get_collection(name) for name in collections_names}
+
+    r = Retriever(cols, RetrieverConfig())
+    return r
 
 def _demo_cli():  # pragma: no cover
     import argparse
     parser = argparse.ArgumentParser(description="Multi-collection Chroma retriever")
     parser.add_argument("query", type=str, nargs="?", default="", help="user query text")
     args = parser.parse_args()
-    client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
-    all_collections = client.list_collections()
-    print(f"All available collections in the DB: {[collection.name for collection in all_collections]}")
-
-    collections_names = ["cpp_code", "bullet_docs"]
-    cols = {name: client.get_collection(name) for name in collections_names}
-
-    retr = Retriever(cols, RetrieverConfig())
+    print("_demo_cli()")
+    retr = create_retriever()
 
     #hits = retr.retrieve(args.query)
     #context, sources = retr.build_context(hits)

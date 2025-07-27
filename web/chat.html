@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Chatbot</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="stylesheet" type="text/css" href="/styles.css">
+
+    <!-- KaTeX for math rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/markdown-it-texmath/css/texmath.css">
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it/dist/markdown-it.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it-texmath/texmath.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        textarea { width: 100%; height: 120px; font-size: 1em; }
+        .preview { border: 1px solid #ccc; padding: 1em; margin-top: 1em; min-height: 100px; background: #fafafa; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AI Chatbot</h1>
+        <div style="font-size: 0.9em; color: #888; margin-bottom: 1em;">
+            Version: {{ version }}
+        </div>
+
+        <div class="chat-history">
+            {% if chat_history %}
+                {% for msg in chat_history %}
+                    <div class="message {{ msg.role }}">
+                        <strong>{{ msg.role|title }}:</strong>
+                        {% if msg.role == 'assistant' %}
+                            <div class="markdown-content">{{ msg.content }}</div>
+                        {% else %}
+                            {{ msg.content }}
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="message system">Welcome {{ username }}! Type a message below to start chatting.</div>
+            {% endif %}
+        </div>
+
+        <div class="controls-section">
+            <div class="model-selector">
+                <label for="model">AI Model:</label>
+                <select name="model" id="model" form="chat-form">
+                    {% for model in available_models %}
+                        <option value="{{ model }}" {% if model == selected_model %}selected{% endif %}>
+                            {{ model }}
+                        </option>
+                    {% endfor %}
+                </select>
+                <form method="post" action="/new-chat" style="display: inline;">
+                    <input type="hidden" name="session_id" value="{{ session_id }}">
+                    <button type="submit" class="new-chat-btn">🔄 New Chat</button>
+                </form>
+            </div>
+
+            <form method="post" class="input-form" id="chat-form">
+                <input type="hidden" name="session_id" value="{{ session_id }}">
+                <div class="input-row">
+                    <input type="text" name="message" placeholder="Type your message here..." required autofocus>
+                    <button type="submit">Send</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <div class="loading-text">AI is thinking...</div>
+        </div>
+    </div>
+
+    <script>
+        // Use markdown-it with texmath for native math support
+        const md = window.markdownit({html: true, breaks: true, linkify: true})
+            .use(texmath, { engine: katex, delimiters: 'dollars', katexOptions: { strict: false } });
+
+        // Function to render markdown content with KaTeX support
+        function renderMarkdown() {
+            // Find all markdown content divs and render them
+            var markdownDivs = document.querySelectorAll('.markdown-content');
+            markdownDivs.forEach(function(div) {
+                var markdownText = div.textContent;
+                // Replace \( ... \) with $...$ for inline math
+                markdownText = markdownText.replace(/\\\((.+?)\\\)/g, function(_, m) {
+                    return '$' + m.trim() + '$';
+                });
+                // Replace \[ ... \] with $$...$$ for block math (optional, for completeness)
+                markdownText = markdownText.replace(/\\\[(.+?)\\\]/gs, function(_, m) {
+                    return '$$' + m.trim() + '$$';
+                });
+                var htmlContent = md.render(markdownText);
+                div.innerHTML = htmlContent;
+            });
+        }
+
+        // Show loading animation when form is submitted
+        function showLoading() {
+            document.getElementById('loadingOverlay').style.display = 'flex';
+        }
+
+        // Hide loading animation
+        function hideLoading() {
+            document.getElementById('loadingOverlay').style.display = 'none';
+        }
+
+        // Add message to chat history
+        function addMessage(role, content, isStreaming = false) {
+            var chatHistory = document.querySelector('.chat-history');
+            var messageDiv = document.createElement('div');
+            messageDiv.className = 'message ' + role;
+
+            var roleLabel = document.createElement('strong');
+            roleLabel.textContent = role.charAt(0).toUpperCase() + role.slice(1) + ':';
+            messageDiv.appendChild(roleLabel);
+
+            if (role === 'assistant') {
+                var contentDiv = document.createElement('div');
+                contentDiv.className = 'markdown-content';
+                contentDiv.textContent = content;
+                messageDiv.appendChild(contentDiv);
+                if (!isStreaming) {
+                    // Replace \( ... \) with $...$ and \[ ... \] with $$...$$ before rendering
+                    let processed = content.replace(/\\\((.+?)\\\)/g, function(_, m) {
+                        return '$' + m.trim() + '$';
+                    });
+                    processed = processed.replace(/\\\[(.+?)\\\]/gs, function(_, m) {
+                        return '$$' + m.trim() + '$$';
+                    });
+                    var htmlContent = md.render(processed);
+                    contentDiv.innerHTML = htmlContent;
+                }
+            } else {
+                messageDiv.appendChild(document.createTextNode(' ' + content));
+            }
+
+            chatHistory.appendChild(messageDiv);
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+
+            return messageDiv;
+        }
+
+        // Update streaming message content with KaTeX support
+        function updateStreamingMessage(messageDiv, content) {
+            var contentDiv = messageDiv.querySelector('.markdown-content');
+            if (contentDiv) {
+                // Store original content
+                contentDiv.textContent = content;
+
+                // Replace \( ... \) with $...$ and \[ ... \] with $$...$$ before rendering
+                let processed = content.replace(/\\\((.+?)\\\)/g, function(_, m) {
+                    return '$' + m.trim() + '$';
+                });
+                processed = processed.replace(/\\\[(.+?)\\\]/gs, function(_, m) {
+                    return '$$' + m.trim() + '$$';
+                });
+                var htmlContent = md.render(processed);
+                contentDiv.innerHTML = htmlContent;
+            }
+        }
+
+        // Handle streaming chat
+        function handleStreamingChat(message, model, sessionId) {
+            showLoading();
+
+            // Add user message to chat
+            addMessage('user', message);
+
+            // Add empty assistant message for streaming
+            var assistantMessage = addMessage('assistant', '', true);
+            var streamContent = '';
+
+            // Create EventSource for SSE
+            fetch('/api/chat-stream', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    message: message,
+                    model: model
+                })
+            })
+            .then(response => {
+                hideLoading();
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                function readStream() {
+                    return reader.read().then(({ done, value }) => {
+                        if (done) {
+                            return;
+                        }
+
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+
+                        for (let line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+
+                                    if (data.type === 'content') {
+                                        streamContent += data.content;
+                                        updateStreamingMessage(assistantMessage, streamContent);
+                                    } else if (data.type === 'done') {
+                                        updateStreamingMessage(assistantMessage, data.full_response);
+                                        console.log('Streaming complete');
+                                    } else if (data.type === 'error') {
+                                        updateStreamingMessage(assistantMessage, data.error);
+                                    }
+                                } catch (e) {
+                                    console.error('Error parsing SSE data:', e);
+                                }
+                            }
+                        }
+
+                        return readStream();
+                    });
+                }
+
+                return readStream();
+            })
+            .catch(error => {
+                hideLoading();
+                console.error('Streaming error:', error);
+                addMessage('assistant', 'Error: ' + error.message);
+            });
+        }
+
+        // Scroll chat history to bottom on page load
+        window.onload = function() {
+            // Render markdown content first, then KaTeX
+            renderMarkdown();
+
+            var chatHistory = document.querySelector('.chat-history');
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+
+            // Add Enter key handler to message input
+            var messageInput = document.querySelector('input[name="message"]');
+            messageInput.addEventListener('keypress', function(event) {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    handleFormSubmission();
+                }
+            });
+
+            // Add submit handler to form - always prevent default for consistency
+            var form = document.querySelector('#chat-form');
+            form.addEventListener('submit', function(event) {
+                event.preventDefault();
+                handleFormSubmission();
+            });
+
+            // Handle form submission with streaming
+            function handleFormSubmission() {
+                var messageInput = document.querySelector('input[name="message"]');
+                var modelSelect = document.querySelector('#model');
+                var sessionIdInput = document.querySelector('input[name="session_id"]');
+
+                var message = messageInput.value.trim();
+                if (!message) return;
+
+                var model = modelSelect.value;
+                var sessionId = sessionIdInput.value;
+
+                // Update URL with session_id for F5 refresh support
+                var currentUrl = new URL(window.location);
+                currentUrl.searchParams.set('session_id', sessionId);
+                window.history.replaceState({}, '', currentUrl);
+
+                // Clear input
+                messageInput.value = '';
+
+                // Always use streaming chat
+                handleStreamingChat(message, model, sessionId);
+            }
+
+            // Add confirmation to new chat button
+            var newChatBtn = document.querySelector('.new-chat-btn');
+            if (newChatBtn) {
+                newChatBtn.parentElement.addEventListener('submit', function(event) {
+                    if (!confirm('Do you want to start new chat? This will clear the current conversation.')) {
+                        event.preventDefault();
+                    }
+                });
+            }
+
+            // Ensure session_id is in URL on page load
+            var sessionIdInput = document.querySelector('input[name="session_id"]');
+            if (sessionIdInput && sessionIdInput.value) {
+                var currentUrl = new URL(window.location);
+                if (!currentUrl.searchParams.get('session_id')) {
+                    currentUrl.searchParams.set('session_id', sessionIdInput.value);
+                    window.history.replaceState({}, '', currentUrl);
+                }
+            }
+        };
+
+        // Handle browser back/forward buttons and F5 refresh
+        window.addEventListener('pageshow', function(event) {
+            if (event.persisted) {
+                // Page was restored from cache (back/forward navigation)
+                renderMarkdown();
+            }
+        });
+    </script>
+</body>
+</html>
