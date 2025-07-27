@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import tiktoken  # type: ignore
@@ -89,6 +90,11 @@ class RetrieverConfig:
     max_candidates_for_rerank: int = 30
     llm_rerank_max_chunk_tokens: int = 512
 
+def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+    dot = sum(x*y for x,y in zip(a,b))
+    norm_a = math.sqrt(sum(x*x for x in a))
+    norm_b = math.sqrt(sum(y*y for y in b))
+    return dot/(norm_a*norm_b) if norm_a and norm_b else 0.0
 
 @dataclass
 class Hit:
@@ -97,6 +103,7 @@ class Hit:
     document: str
     metadata: Dict[str, Any] = field(default_factory=dict)
     collection_name: str = ""
+    embedding: Optional[List[float]] = None
 
     def source_label(self) -> str:
         fp = self.metadata.get("file_path") or self.metadata.get("source") or self.id
@@ -153,25 +160,6 @@ def reciprocal_rank_fusion(list_of_lists: Sequence[Sequence[Hit]], b: int = 60) 
     return out
 
 
-def mmr_select(hits: Sequence[Hit], k: int, lambda_relevance: float = 0.5) -> List[Hit]:
-    """Simple Maximal Marginal Relevance using cosine similarity between embeddings is typical,
-    but we don't have embeddings here. We'll approximate with text overlap (very rough) or just skip.
-    For simplicity, we'll diversify by source_label (avoid multiple from same file region).
-    """
-    selected: List[Hit] = []
-    seen_sources: set = set()
-    for h in hits:
-        lbl = h.source_label()
-        if lbl in seen_sources and len(selected) < k:
-            # if already have this source, optionally downweight -> skip
-            continue
-        selected.append(h)
-        seen_sources.add(lbl)
-        if len(selected) >= k:
-            break
-    return selected
-
-
 def _guess_block_language(hit: Hit, cfg: RetrieverConfig) -> str:
     # Determine syntax highlighting language for fenced code blocks
     meta = hit.metadata
@@ -184,6 +172,30 @@ def _guess_block_language(hit: Hit, cfg: RetrieverConfig) -> str:
         return cfg.default_code_lang
     return cfg.default_doc_lang
 
+def mmr_select(hits: Sequence[Hit], k: int, lambda_relevance: float = 0.5) -> List[Hit]:
+    """True Maximal Marginal Relevance over document embeddings."""
+    if not hits or k <= 0:
+        return []
+    candidates = list(hits)
+    selected: List[Hit] = [candidates.pop(0)]  # start with highest‐scoring
+
+    while len(selected) < k and candidates:
+        mmr_scores: List[tuple[float, Hit]] = []
+        for h in candidates:
+            rel = h.score
+            if h.embedding is None or any(s.embedding is None for s in selected):
+                div = 0.0
+            else:
+                # diversity = max similarity to any already selected
+                div = max(_cosine_similarity(h.embedding, s.embedding) for s in selected)  # type: ignore
+            mmr_score = lambda_relevance * rel - (1 - lambda_relevance) * div
+            mmr_scores.append((mmr_score, h))
+
+        _, best = max(mmr_scores, key=lambda x: x[0])
+        selected.append(best)
+        candidates.remove(best)
+
+    return selected
 
 # ----------------------------
 # Core class
@@ -213,16 +225,26 @@ class Retriever:
         res = col.query(
             query_embeddings=[q_emb],
             n_results=k,
-            include=["documents", "metadatas", "distances"],
+            include=["documents", "metadatas", "distances", "embeddings"],
         )
         ids = res["ids"][0]
         docs = res["documents"][0]
         metas = res["metadatas"][0]
         dists = res.get("distances", [[None]*len(ids)])[0]
+        embs  = res.get("embeddings", [[None]*len(ids)])[0]
+
         out: List[Hit] = []
-        for rid, doc, meta, dist in zip(ids, docs, metas, dists):
+        for rid, doc, meta, dist, emb in zip(ids, docs, metas, dists, embs):
             score = _cosine_to_similarity(dist) if dist is not None else 0.0
-            out.append(Hit(id=rid, score=score, document=doc, metadata=meta, collection_name=name))
+            out.append(Hit(
+               id=rid,
+               score=score,
+               document=doc,
+               metadata=meta,
+               collection_name=name,
+               embedding=emb
+            ))
+
         return out
 
     def retrieve(
@@ -411,10 +433,11 @@ def _demo_cli():  # pragma: no cover
 #        q = "How can I perform raycasting using Bullet3?"
 #        q = "Explain dynamicsWorld->rayTest()"
 #        q = "What examples are provided in Bullet3 library?"
-#        q = "Describe how numerical integration is performed in the physics simulation?"
-        q = "What is new in Bullet version 2.81?"
+        q = "Describe how numerical integration is performed in the physics simulation?"
+#        q = "What is new in Bullet version 2.81?"
 #        q = "How to compute the object AABBs?"
-
+#        q = "Where class btMotionState is defined?"
+#        q = "Does Coriolis force is taken into account for bodies that fly around Earth?"
 
         pass
     print("\n--- Question: ---")
@@ -425,8 +448,8 @@ def _demo_cli():  # pragma: no cover
     print("\n=== DONE ===")
 
     print("\nSources:")
-    for s in sources:
-        print(s["source"])
+    # for s in sources:
+    #     print(s["source"])
 
 
 if __name__ == "__main__":  # pragma: no cover
