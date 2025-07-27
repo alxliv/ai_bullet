@@ -15,8 +15,9 @@ import logging
 import secrets
 from retriever import Retriever, create_retriever, ask_llm
 from config import DOCUMENTS_PATH, SOURCES_PATH
+from typing import Tuple
 
-version = "1.17.2"
+version = "1.17.3"
 print(f"Version: {version}")
 
 # ANSI escape codes for colors
@@ -443,6 +444,18 @@ async def api_chat(request: Request, username: str = Depends(authenticate_user))
         "message_count": len(session_data["messages"])
     }
 
+def parse_source_line(src: str) -> Tuple[str, str]:
+    """
+    Given a string like:
+      "/home/…/Bullet_User_Manual.pdf : p 23, 1-17"
+    return:
+      ("/home/…/Bullet_User_Manual.pdf", "p 23, 1-17")
+    """
+    if " : " in src:
+        file_path, page_line = src.split(" : ", 1)
+    else:
+        file_path, page_line = src.split(":", 1) if ":" in src else (src, "")
+    return file_path.strip(), page_line.strip()
 
 @app.post("/api/chat-stream")
 async def api_chat_stream(request: Request, username: str = Depends(authenticate_user)):
@@ -493,6 +506,20 @@ async def api_chat_stream(request: Request, username: str = Depends(authenticate
 
             full_response = full_response.replace(DOCS_ROOT, "/docs")
             full_response = full_response.replace(SRC_ROOT, "/src")
+            if sources:
+                src_section = "\n\n**SOURCES:**\n"
+                max_show=5
+                for src in sources[:max_show]:
+                    s = src.get("source", "")
+                    s = s.replace(DOCS_ROOT, "/docs")
+                    s = s.replace(SRC_ROOT, "/src")
+                    url,loc = parse_source_line(s)
+                    src_section += f"- [{os.path.basename(url)}]({url})"
+                    if loc:
+                        src_section += f" : {loc}"
+                    src_section+='\n'
+                full_response += src_section+"\n"
+
 
             # Add complete response to session
             session_data["messages"].append({"role": "assistant", "content": full_response})
