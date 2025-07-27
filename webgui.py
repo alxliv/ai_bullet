@@ -14,6 +14,7 @@ import string
 import logging
 import secrets
 from retriever import Retriever, create_retriever, ask_llm
+from config import DOCUMENTS_PATH, SOURCES_PATH
 
 version = "1.17.2"
 print(f"Version: {version}")
@@ -136,7 +137,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+DOCS_ROOT = os.path.expanduser(DOCUMENTS_PATH)
+SRC_ROOT = os.path.expanduser(SOURCES_PATH)
+
 app.mount("/static", StaticFiles(directory="web"), name="static")
+app.mount("/docs", StaticFiles(directory=DOCS_ROOT), name="docs")
+app.mount("/src", StaticFiles(directory=SRC_ROOT), name="src")
+
 templates = Jinja2Templates(directory="web")
 
 # Session-based message storage - each client gets their own chat history
@@ -483,6 +490,9 @@ async def api_chat_stream(request: Request, username: str = Depends(authenticate
                     full_response += content
                     # Send each chunk as SSE
                     yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+
+            full_response = full_response.replace(DOCS_ROOT, "/docs")
+            full_response = full_response.replace(SRC_ROOT, "/src")
 
             # Add complete response to session
             session_data["messages"].append({"role": "assistant", "content": full_response})
