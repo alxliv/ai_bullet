@@ -17,7 +17,7 @@ from retriever import Retriever, create_retriever, ask_llm
 from config import DOCUMENTS_PATH, SOURCES_PATH
 from typing import Tuple
 
-version = "1.17.3"
+version = "1.17.4"
 print(f"Version: {version}")
 
 # ANSI escape codes for colors

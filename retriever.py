@@ -79,12 +79,15 @@ class RetrieverConfig:
     system_template: str = (
         "You are a precise assistant for C/C++ code and project documentation. "
         "Use only the given CONTEXT to answer. If unsure, say you don't know. "
+        "Format your responses in markdown, and use LaTeX math notation (enclosed in $...$) for mathematical expressions and formulas."
         "Cite sources by file path, page number and line numbers when available."
     )
+
     user_template: str = (
         "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
         "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](path) : page,line-range)."
     )
+
     use_llm_rerank: bool = False
     llm_rerank_model: str = "gpt-3.5-turbo" # "gpt-4o-mini"
     max_candidates_for_rerank: int = 30
@@ -376,11 +379,12 @@ def ask_llm(query: str, retriever, model="gpt-4o-mini", streaming=False):
 
     # 2) call OpenAI
     print("Calling OpenAI...")
+    temperature = 1 if "o4-mini" in model else 0 # temperature is not supported (only 1) in o4-mini
     resp = retriever.oa.chat.completions.create(
         model=model,
         messages=messages,
         stream=streaming,
-        temperature=0
+        temperature=temperature
     )
     if streaming:
         print("Start stream from OpenAI")
@@ -443,12 +447,12 @@ def _demo_cli():  # pragma: no cover
 #        q = "How can I perform raycasting using Bullet3?"
 #        q = "Explain dynamicsWorld->rayTest()"
 #        q = "What examples are provided in Bullet3 library?"
-        q = "Describe how numerical integration is performed in the physics simulation?"
+#        q = "Describe how numerical integration is performed in the physics simulation?"
 #        q = "What is new in Bullet version 2.81?"
 #        q = "How to compute the object AABBs?"
-#        q = "Where class btMotionState is defined?"
+        q = "Where class btMotionState is defined?"
 #        q = "Does Coriolis force is taken into account for bodies that fly around Earth?"
-
+#        q = "Explain struct LuaPhysicsSetup"
         pass
     print("\n--- Question: ---")
     print(q)
@@ -458,8 +462,8 @@ def _demo_cli():  # pragma: no cover
     print("\n=== DONE ===")
 
     print("\nSources:")
-    # for s in sources:
-    #     print(s["source"])
+    for s in sources:
+        print(s["source"])
 
 
 if __name__ == "__main__":  # pragma: no cover
