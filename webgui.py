@@ -17,7 +17,7 @@ from retriever import Retriever, create_retriever, ask_llm
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 from typing import Tuple
 
-version = "1.17.5"
+version = "1.17.6"
 print(f"Version: {version}")
 
 # ANSI escape codes for colors
@@ -496,16 +496,20 @@ async def api_chat_stream(request: Request, username: str = Depends(authenticate
             stream, sources = ask_llm(query, retriever, model=model, streaming=True)
 
             # Send initial data
+            print("before send initial")
             yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'model': model})}\n\n"
+            print("after send initial")
 
             full_response = ""
             for chunk in stream:
-                if chunk.choices[0].delta.content is not None:
-                    content = chunk.choices[0].delta.content
-                    full_response += content
+                delta = chunk.choices[0].delta.content
+                if delta is not None:
+                    full_response += delta
                     # Send each chunk as SSE
-                    yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+                    print("send chunk as SSE")
+                    yield f"data: {json.dumps({'type': 'content', 'content': delta})}\n\n"
 
+            print("full response arrived!!")
             full_response = full_response.replace(DOCS_ROOT, "/docs")
             full_response = full_response.replace(SRC_ROOT, "/src")
             full_response = full_response.replace(EXAMPLES_ROOT, "/examples")

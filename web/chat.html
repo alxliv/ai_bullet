@@ -151,18 +151,22 @@
         // Update streaming message content with KaTeX support
         function updateStreamingMessage(messageDiv, content) {
             var contentDiv = messageDiv.querySelector('.markdown-content');
+            console.log("contentDiv:", contentDiv)
             if (contentDiv) {
                 // Store original content
                 contentDiv.textContent = content;
 
                 // Replace \( ... \) with $...$ and \[ ... \] with $$...$$ before rendering
-                let processed = content.replace(/\\\((.+?)\\\)/g, function(_, m) {
+                let processed = content.replace(/\\\[([^\]]+)\\\]/gs, function(_, m) {
                     return '$' + m.trim() + '$';
                 });
-                processed = processed.replace(/\\\[(.+?)\\\]/gs, function(_, m) {
+                processed = processed.replace(/\\\[([^\]]+)\\\]/gs, function(_, m) {
                     return '$$' + m.trim() + '$$';
                 });
                 var htmlContent = md.render(processed);
+                // Make all links open in new tabs
+                htmlContent = htmlContent.replace(/<a href/g, '<a target="_blank" rel="noopener noreferrer" href');
+
                 contentDiv.innerHTML = htmlContent;
             }
         }
@@ -177,6 +181,7 @@
             // Add empty assistant message for streaming
             var assistantMessage = addMessage('assistant', '', true);
             var streamContent = '';
+            var buffer = ''; // Buffer for incomplete data
 
             // Create EventSource for SSE
             fetch('/api/chat-stream', {
