@@ -148,28 +148,26 @@
             return messageDiv;
         }
 
-        // Update streaming message content with KaTeX support
-        function updateStreamingMessage(messageDiv, content) {
-            var contentDiv = messageDiv.querySelector('.markdown-content');
-            console.log("contentDiv:", contentDiv)
-            if (contentDiv) {
-                // Store original content
-                contentDiv.textContent = content;
+    function updateStreamingMessage(messageDiv, content, data_type) {
+        const contentDiv = messageDiv.querySelector('.markdown-content');
+        if (!contentDiv) return;
 
-                // Replace \( ... \) with $...$ and \[ ... \] with $$...$$ before rendering
-                let processed = content.replace(/\\\[([^\]]+)\\\]/gs, function(_, m) {
-                    return '$' + m.trim() + '$';
-                });
-                processed = processed.replace(/\\\[([^\]]+)\\\]/gs, function(_, m) {
-                    return '$$' + m.trim() + '$$';
-                });
-                var htmlContent = md.render(processed);
-                // Make all links open in new tabs
-                htmlContent = htmlContent.replace(/<a href/g, '<a target="_blank" rel="noopener noreferrer" href');
-
-                contentDiv.innerHTML = htmlContent;
-            }
+        if (data_type === 'done') {
+            // final markdown/Katex render
+            let mdText = content
+            .replace(/\\\((.+?)\\\)/g, (_, m) => `$${m.trim()}$`)
+            .replace(/\\\[(.+?)\\\]/gs, (_, m) => `$$${m.trim()}$$`);
+            let html = md.render(mdText)
+            html = html.replace(/<a href/g,'<a target="_blank" rel="noopener noreferrer" href');
+            contentDiv.innerHTML = html;
+        } else {
+            // streaming: raw text so it shows up immediately
+            contentDiv.textContent = content;
+            console.log("stream content: ", content)
+            // scroll into view
+            contentDiv.scrollIntoView({ block: 'end' });
         }
+    }
 
         // Handle streaming chat
         function handleStreamingChat(message, model, sessionId) {
@@ -181,8 +179,6 @@
             // Add empty assistant message for streaming
             var assistantMessage = addMessage('assistant', '', true);
             var streamContent = '';
-            var buffer = ''; // Buffer for incomplete data
-
             // Create EventSource for SSE
             fetch('/api/chat-stream', {
                 method: 'POST',
@@ -195,52 +191,48 @@
                     model: model
                 })
             })
-            .then(response => {
+            .then(async response => {
                 hideLoading();
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
-
-                function readStream() {
-                    return reader.read().then(({ done, value }) => {
-                        if (done) {
-                            return;
-                        }
-
-                        const chunk = decoder.decode(value);
-                        const lines = chunk.split('\n');
-
-                        for (let line of lines) {
-                            if (line.startsWith('data: ')) {
-                                try {
-                                    const data = JSON.parse(line.slice(6));
-
-                                    if (data.type === 'content') {
-                                        streamContent += data.content;
-                                        updateStreamingMessage(assistantMessage, streamContent);
-                                    } else if (data.type === 'done') {
-                                        updateStreamingMessage(assistantMessage, data.full_response);
-                                        console.log('Streaming complete');
-                                    } else if (data.type === 'error') {
-                                        updateStreamingMessage(assistantMessage, data.error);
-                                    }
-                                } catch (e) {
-                                    console.error('Error parsing SSE data:', e);
-                                }
-                            }
-                        }
-
-                        return readStream();
-                    });
+                let buffer = ''; // Buffer for incomplete data
+                let done=false;
+                let streamContent = '';
+            while (!done) {
+                const { value, done: readerDone } = await reader.read();
+                done = readerDone;
+                if (value) {
+                buffer += decoder.decode(value, { stream: true });
+                // split out complete SSE messages
+                const parts = buffer.split('\n\n');
+                buffer = parts.pop() || '';  // leftover partial
+                for (const part of parts) {
+                    const m = part.match(/^data:\s*(.*)$/m);
+                    if (!m) continue;
+                    try {
+                    const data = JSON.parse(m[1]);
+                    if (data.type === 'content') {
+                        streamContent += data.content;
+                        updateStreamingMessage(assistantMessage, streamContent, 'stream');
+                        // give the browser a tick to repaint
+                        await new Promise(requestAnimationFrame);
+                    }
+                    else if (data.type === 'done') {
+                        updateStreamingMessage(assistantMessage, data.full_response, 'done');
+                    }
+                    } catch(e) {
+                    console.error('bad SSE chunk:', part, e);
+                    }
                 }
-
-                return readStream();
+                }
+            }
             })
-            .catch(error => {
-                hideLoading();
-                console.error('Streaming error:', error);
-                addMessage('assistant', 'Error: ' + error.message);
-            });
-        }
+           .catch(error => {
+            hideLoading();
+            console.error('Streaming error:', error);
+            addMessage('assistant', 'Error: ' + error.message);
+        });
+    }
 
         // Scroll chat history to bottom on page load
         window.onload = function() {
