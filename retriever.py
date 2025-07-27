@@ -450,9 +450,11 @@ def _demo_cli():  # pragma: no cover
 #        q = "Describe how numerical integration is performed in the physics simulation?"
 #        q = "What is new in Bullet version 2.81?"
 #        q = "How to compute the object AABBs?"
-        q = "Where class btMotionState is defined?"
+#        q = "Where class btMotionState is defined?"
 #        q = "Does Coriolis force is taken into account for bodies that fly around Earth?"
 #        q = "Explain struct LuaPhysicsSetup"
+        q = "In stepSimulation() why we need to clamp the number of substeps?"
+
         pass
     print("\n--- Question: ---")
     print(q)

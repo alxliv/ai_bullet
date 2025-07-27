@@ -16,8 +16,9 @@ import secrets
 from retriever import Retriever, create_retriever, ask_llm
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 from typing import Tuple
+from fastapi import Query
 
-version = "1.17.6"
+version = "1.17.7"
 print(f"Version: {version}")
 
 # ANSI escape codes for colors
@@ -453,107 +454,111 @@ def parse_source_line(src: str) -> Tuple[str, str]:
     return:
       ("/home/…/Bullet_User_Manual.pdf", "p 23, 1-17")
     """
-    if " : " in src:
-        file_path, page_line = src.split(" : ", 1)
+    if ":" in src:
+        file_path, page_line = src.split(":", 1)
     else:
-        file_path, page_line = src.split(":", 1) if ":" in src else (src, "")
+        page_line=""
+        file_path = src
     return file_path.strip(), page_line.strip()
 
-@app.post("/api/chat-stream")
-async def api_chat_stream(request: Request, username: str = Depends(authenticate_user)):
-    """Streaming chat endpoint using Server-Sent Events"""
-    data = await request.json()
+from fastapi import Query
 
-    session_id = data.get("session_id")
-    message = data.get("message", "")
-    model = data.get("model")
-
-    if not message:
-        return {"error": "Message is required"}
-
-    # Get or create session
-    session_id = get_or_create_session(username, session_id)
+@app.get("/api/chat-stream")
+async def api_chat_stream(
+    session_id: str = Query(None),
+    message: str   = Query(...),
+    model:   str   = Query(None),
+    username: str  = Depends(authenticate_user),
+):
+    """
+    Streaming chat endpoint using Server-Sent Events.
+    Expects: /api/chat-stream?session_id=…&message=…&model=…
+    """
+    # ensure we have a session
+    session_id   = get_or_create_session(username, session_id)
     session_data = user_sessions[session_id]
 
-    # Use the selected model or keep current
+    # select model
     if model and model in available_models:
         session_data["model"] = model
-    elif not model:
+    else:
         model = session_data["model"]
 
-    # Add user message
+    # record user turn
     session_data["messages"].append({"role": "user", "content": message})
 
-    async def generate():
+    async def event_generator():
         try:
-            # Filter messages for o1 models
-            if model.startswith('o1'):
-                filtered_messages = [msg for msg in session_data["messages"] if msg["role"] != "system"]
+            # filter system messages for o1 models
+            if model.startswith("o1"):
+                msgs = [m for m in session_data["messages"] if m["role"] != "system"]
             else:
-                filtered_messages = session_data["messages"]
+                msgs = session_data["messages"]
 
-            query = message
-            stream, sources = ask_llm(query, retriever, model=model, streaming=True)
+            # kickoff retrieval + streaming LLM
+            stream, sources = ask_llm(message, retriever,
+                                      model=model, streaming=True)
 
-            # Send initial data
-            print("before send initial")
-            yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'model': model})}\n\n"
-            print("after send initial")
+            # initial SSE event
+            yield f"data: {json.dumps({'type':'start', 'session_id':session_id, 'model':model})}\n\n"
 
             full_response = ""
+            # stream chunks
             for chunk in stream:
                 delta = chunk.choices[0].delta.content
                 if delta is not None:
                     full_response += delta
-                    # Send each chunk as SSE
-                    print("send chunk as SSE")
-                    yield f"data: {json.dumps({'type': 'content', 'content': delta})}\n\n"
+#                    print(f"Delta SSE received {delta}")
+                    yield f"data: {json.dumps({'type':'content','content':delta})}\n\n"
 
-            print("full response arrived!!")
-            full_response = full_response.replace(DOCS_ROOT, "/docs")
-            full_response = full_response.replace(SRC_ROOT, "/src")
-            full_response = full_response.replace(EXAMPLES_ROOT, "/examples")
-            full_response = full_response.replace(EXAMPLES_ROOT.lstrip("/"), "/examples")
+            # post‐process the complete answer
+            full_response = (
+                full_response
+                .replace(DOCS_ROOT, "/docs")
+                .replace(SRC_ROOT, "/src")
+                .replace(EXAMPLES_ROOT, "/examples")
+            )
+
+            # append a SOURCES section (max 5)
             if sources:
-                src_section = "\n\n**SOURCES:**\n"
-                max_show=5
+                src_md = "\n\n**SOURCES:**\n"
+                max_show = 5
                 for src in sources[:max_show]:
-                    s = src.get("source", "")
+                    s = src["source"]
                     s = s.replace(DOCS_ROOT, "/docs")
-                    s = s.replace(SRC_ROOT, "/src")
+                    s = s.replace(SRC_ROOT,  "/src")
                     s = s.replace(EXAMPLES_ROOT, "/examples")
-                    url,loc = parse_source_line(s)
-                    src_section += f"- [{os.path.basename(url)}]({url})"
+                    url, loc = parse_source_line(s)
+                    name = os.path.basename(url)
+                    src_md += f"- [{name}]({url})"
                     if loc:
-                        src_section += f" : {loc}"
-                    src_section+='\n'
-                full_response += src_section+"\n"
+                        src_md += f" : {loc}"
+                    src_md += "\n"
+                full_response += src_md
 
-
-            # Add complete response to session
-            session_data["messages"].append({"role": "assistant", "content": full_response})
-
-            # Save chat history
+            # save assistant turn
+            session_data["messages"].append({"role":"assistant", "content": full_response})
             save_chat_history(session_id)
             cleanup_old_sessions()
 
-            # Send completion signal
-            yield f"data: {json.dumps({'type': 'done', 'full_response': full_response})}\n\n"
+            # final SSE event
+            print("Final SSE")
+            yield f"data: {json.dumps({'type':'done','full_response': full_response})}\n\n"
 
         except Exception as e:
-            error_msg = f"Error with {model}: {e}"
-            session_data["messages"].append({"role": "assistant", "content": error_msg})
-            yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+            err = f"Error with {model}: {e}"
+            session_data["messages"].append({"role":"assistant","content": err})
+            yield f"data: {json.dumps({'type':'error','error': err})}\n\n"
 
     return StreamingResponse(
-        generate(),
+        event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
+            "Cache-Control":            "no-cache",
+            "Connection":               "keep-alive",
+            "Access-Control-Allow-Origin":  "*",
             "Access-Control-Allow-Headers": "*",
-        }
+        },
     )
 
 def cleanup_old_sessions():

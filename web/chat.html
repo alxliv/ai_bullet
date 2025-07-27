@@ -169,72 +169,56 @@
         }
     }
 
-        // Handle streaming chat
-        function handleStreamingChat(message, model, sessionId) {
-            showLoading();
+    function handleStreamingChat(message, model, sessionId) {
+    showLoading();
 
-            // Add user message to chat
-            addMessage('user', message);
+    // 1) Add the user’s message
+    addMessage('user', message);
 
-            // Add empty assistant message for streaming
-            var assistantMessage = addMessage('assistant', '', true);
-            var streamContent = '';
-            // Create EventSource for SSE
-            fetch('/api/chat-stream', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    session_id: sessionId,
-                    message: message,
-                    model: model
-                })
-            })
-            .then(async response => {
-                hideLoading();
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = ''; // Buffer for incomplete data
-                let done=false;
-                let streamContent = '';
-            while (!done) {
-                const { value, done: readerDone } = await reader.read();
-                done = readerDone;
-                if (value) {
-                buffer += decoder.decode(value, { stream: true });
-                // split out complete SSE messages
-                const parts = buffer.split('\n\n');
-                buffer = parts.pop() || '';  // leftover partial
-                for (const part of parts) {
-                    const m = part.match(/^data:\s*(.*)$/m);
-                    if (!m) continue;
-                    try {
-                    const data = JSON.parse(m[1]);
-                    if (data.type === 'content') {
-                        streamContent += data.content;
-                        updateStreamingMessage(assistantMessage, streamContent, 'stream');
-                        // give the browser a tick to repaint
-                        await new Promise(requestAnimationFrame);
-                    }
-                    else if (data.type === 'done') {
-                        updateStreamingMessage(assistantMessage, data.full_response, 'done');
-                    }
-                    } catch(e) {
-                    console.error('bad SSE chunk:', part, e);
-                    }
-                }
-                }
-            }
-            })
-           .catch(error => {
-            hideLoading();
-            console.error('Streaming error:', error);
-            addMessage('assistant', 'Error: ' + error.message);
-        });
-    }
+    // 2) Create an empty assistant bubble
+    const assistantMsg = addMessage('assistant', '', false);
+    const contentDiv   = assistantMsg.querySelector('.markdown-content');
 
-        // Scroll chat history to bottom on page load
+    // 3) Open an EventSource to your SSE endpoint
+    const params = new URLSearchParams({ session_id: sessionId,
+                                        message: message,
+                                        model: model });
+    const es = new EventSource(`/api/chat-stream?${params}`);
+
+    es.onmessage = evt => {
+        const data = JSON.parse(evt.data);
+        if (data.type === 'content') {
+        // append the new chunk
+        contentDiv.textContent += data.content;
+        // scroll into view
+        contentDiv.scrollIntoView({ block: 'end' });
+        }
+        else if (data.type === 'done') {
+        // final markdown + KaTeX render
+        let mdText = data.full_response
+                        .replace(/\\\((.+?)\\\)/g, (_, m) => `$${m.trim()}$`)
+                        .replace(/\\\[(.+?)\\\]/gs, (_, m) => `$$${m.trim()}$$`);
+        let html = md.render(mdText)
+                    .replace(/<a href/g, '<a target="_blank" rel="noopener noreferrer" href');
+        contentDiv.innerHTML = html;
+        es.close();
+        hideLoading();
+        }
+        else if (data.type === 'error') {
+        contentDiv.textContent = data.error;
+        es.close();
+        hideLoading();
+        }
+    };
+
+    es.onerror = err => {
+        console.error("SSE error", err);
+        es.close();
+        hideLoading();
+    };
+}
+
+// Scroll chat history to bottom on page load
         window.onload = function() {
             // Render markdown content first, then KaTeX
             renderMarkdown();
