@@ -48,7 +48,7 @@ from openai import OpenAI
 import chromadb
 from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
-from config import DOCUMENTS_PATH, SOURCES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
 from types import MappingProxyType
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)

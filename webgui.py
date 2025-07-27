@@ -14,10 +14,10 @@ import string
 import logging
 import secrets
 from retriever import Retriever, create_retriever, ask_llm
-from config import DOCUMENTS_PATH, SOURCES_PATH
+from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 from typing import Tuple
 
-version = "1.17.4"
+version = "1.17.5"
 print(f"Version: {version}")
 
 # ANSI escape codes for colors
@@ -140,10 +140,12 @@ app.add_middleware(
 
 DOCS_ROOT = os.path.expanduser(DOCUMENTS_PATH)
 SRC_ROOT = os.path.expanduser(SOURCES_PATH)
+EXAMPLES_ROOT = os.path.expanduser(EXAMPLES_PATH)
 
 app.mount("/static", StaticFiles(directory="web"), name="static")
 app.mount("/docs", StaticFiles(directory=DOCS_ROOT), name="docs")
 app.mount("/src", StaticFiles(directory=SRC_ROOT), name="src")
+app.mount("/examples", StaticFiles(directory=EXAMPLES_ROOT), name="examples")
 
 templates = Jinja2Templates(directory="web")
 
@@ -506,6 +508,8 @@ async def api_chat_stream(request: Request, username: str = Depends(authenticate
 
             full_response = full_response.replace(DOCS_ROOT, "/docs")
             full_response = full_response.replace(SRC_ROOT, "/src")
+            full_response = full_response.replace(EXAMPLES_ROOT, "/examples")
+            full_response = full_response.replace(EXAMPLES_ROOT.lstrip("/"), "/examples")
             if sources:
                 src_section = "\n\n**SOURCES:**\n"
                 max_show=5
@@ -513,6 +517,7 @@ async def api_chat_stream(request: Request, username: str = Depends(authenticate
                     s = src.get("source", "")
                     s = s.replace(DOCS_ROOT, "/docs")
                     s = s.replace(SRC_ROOT, "/src")
+                    s = s.replace(EXAMPLES_ROOT, "/examples")
                     url,loc = parse_source_line(s)
                     src_section += f"- [{os.path.basename(url)}]({url})"
                     if loc:

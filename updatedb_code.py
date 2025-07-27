@@ -2,7 +2,7 @@ import os, tiktoken
 from tree_sitter import Language, Parser
 import tree_sitter_cpp as tscpp
 from dotenv import load_dotenv
-from config import DOCUMENTS_PATH, SOURCES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
 
 from openai import OpenAI, BadRequestError
 import tiktoken
@@ -19,6 +19,7 @@ MAX_REQUEST_TOKENS= 7800
 
 DOCUMENTS_FULL_PATH = os.path.expanduser(DOCUMENTS_PATH)
 SOURCES_FULL_PATH = os.path.expanduser(SOURCES_PATH)
+EXAMPLES_FULL_PATH = os.path.expanduser(EXAMPLES_PATH)
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
 enc = tiktoken.get_encoding("cl100k_base")
@@ -156,7 +157,10 @@ def walk_repo_and_chunk(root_dir):
     return all_chunks
 
 all_chunks = walk_repo_and_chunk(SOURCES_FULL_PATH)
-print(f"All {len(all_chunks)} chunks collected.")
+print(f"All {len(all_chunks)} chunks from {SOURCES_FULL_PATH} collected.")
+all_chunks_examples = walk_repo_and_chunk(EXAMPLES_FULL_PATH)
+print(f"All {len(all_chunks_examples)} chunks from {EXAMPLES_FULL_PATH} collected.")
+all_chunks += all_chunks_examples
 
 import chromadb
 from openai import OpenAI
@@ -253,7 +257,7 @@ def embed_and_add(chunks, collection):
     if not records:
         print("Nothing new to embed.")
         return
-    
+
     records_left = len(records)
     print(f"Total new records to process: {records_left}")
     for batch in batch_by_token_budget(records):
