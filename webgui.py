@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -142,6 +143,20 @@ app.add_middleware(
 DOCS_ROOT = os.path.expanduser(DOCUMENTS_PATH)
 SRC_ROOT = os.path.expanduser(SOURCES_PATH)
 EXAMPLES_ROOT = os.path.expanduser(EXAMPLES_PATH)
+
+REPLACEMENTS = {}
+for root, alias in (
+    (DOCS_ROOT,    "/docs"),
+    (SRC_ROOT,     "/src"),
+    (EXAMPLES_ROOT, "/examples"),
+):
+    # map both the absolute path and the same string without leading slash
+    REPLACEMENTS[root] = alias
+    REPLACEMENTS[root.lstrip(os.sep)] = alias
+
+# compile a single pattern matching any of those keys
+RE_ROOTS_PATTERN = re.compile("|".join(re.escape(k) for k in REPLACEMENTS))
+
 
 app.mount("/static", StaticFiles(directory="web"), name="static")
 app.mount("/docs", StaticFiles(directory=DOCS_ROOT), name="docs")
@@ -512,12 +527,7 @@ async def api_chat_stream(
                     yield f"data: {json.dumps({'type':'content','content':delta})}\n\n"
 
             # post‐process the complete answer
-            full_response = (
-                full_response
-                .replace(DOCS_ROOT, "/docs")
-                .replace(SRC_ROOT, "/src")
-                .replace(EXAMPLES_ROOT, "/examples")
-            )
+            full_response = RE_ROOTS_PATTERN.sub(lambda m: REPLACEMENTS[m.group(0)], full_response)
 
             # append a SOURCES section (max 5)
             if sources:
@@ -525,9 +535,8 @@ async def api_chat_stream(
                 max_show = 5
                 for src in sources[:max_show]:
                     s = src["source"]
-                    s = s.replace(DOCS_ROOT, "/docs")
-                    s = s.replace(SRC_ROOT,  "/src")
-                    s = s.replace(EXAMPLES_ROOT, "/examples")
+                    s = RE_ROOTS_PATTERN.sub(lambda m: REPLACEMENTS[m.group(0)], s)
+
                     url, loc = parse_source_line(s)
                     name = os.path.basename(url)
                     src_md += f"- [{name}]({url})"
@@ -577,4 +586,4 @@ if __name__ == "__main__":
     print("before unicorn run")
     uvicorn.run("webgui:app", host="0.0.0.0", port=8501, reload=False)
 
-# To run: uvicorn eel_front:app --host 0.0.0.0 --port 8501
+# To run: uvicorn webgui:app --host 0.0.0.0 --port 8501
