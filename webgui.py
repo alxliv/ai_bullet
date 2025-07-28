@@ -19,7 +19,7 @@ from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 from typing import Tuple
 from fastapi import Query
 
-version = "1.17.7"
+version = "1.17.9"
 print(f"Version: {version}")
 
 # ANSI escape codes for colors
@@ -239,7 +239,6 @@ def save_chat_history(session_id):
         "timestamp": datetime.now().strftime("%H:%M:%S GMT"),
         "date": datetime.now().strftime("%Y-%m-%d"),
         "session_id": session_id,
-        "model_used": session_data["model"],
         "message_count": len(messages) - 1,  # Exclude system message
         "messages": messages
     }
@@ -280,45 +279,7 @@ async def chat_page(request: Request, session_id = None, username: str = Depends
 
 @app.post("/", response_class=HTMLResponse)
 async def chat_submit(request: Request, message: str = Form(...), model: str = Form(None), session_id: str = Form(None), username: str = Depends(authenticate_user)):
-    # Debug: Log the received parameters
-    logger.info(f"Received: message='{message}', model='{model}', session_id='{session_id}'")
-
-    # Get or create session
-    session_id = get_or_create_session(username, session_id)
-    session_data = user_sessions[session_id]
-
-    # Use the selected model or keep current
-    if model and model in available_models:
-        session_data["model"] = model
-    elif not model:
-        model = session_data["model"]
-
-    session_data["messages"].append({"role": "user", "content": message})
-    try:
-        # o1 models don't support system messages, so filter them out
-        if model.startswith('o1'):
-            # Remove system messages for o1 models
-            filtered_messages = [msg for msg in session_data["messages"] if msg["role"] != "system"]
-        else:
-            filtered_messages = session_data["messages"]
-
-        response = client.chat.completions.create(
-            model=model,  # Use the selected model
-            messages=filtered_messages
-        )
-        reply = response.choices[0].message.content
-    except Exception as e:
-        reply = f"Error with {model}: {e}"
-    session_data["messages"].append({"role": "assistant", "content": reply})
-
-    # Save the chat history to a file
-    save_chat_history(session_id)
-
-    # Periodic cleanup
-    cleanup_old_sessions()
-
-    # Redirect to GET with session_id to maintain state on refresh
-    return RedirectResponse(url=f"/?session_id={session_id}", status_code=303)
+    pass
 
 @app.get("/favicon.ico")
 async def favicon():
@@ -376,7 +337,6 @@ async def list_saved_chats():
                         "timestamp": chat_data.get("timestamp", "Unknown"),
                         "date": chat_data.get("date", "Unknown"),
                         "session_id": chat_data.get("session_id", "Unknown"),
-                        "model": chat_data.get("model_used", "Unknown"),
                         "message_count": chat_data.get("message_count", 0)
                     })
                 except Exception as e:
@@ -405,62 +365,7 @@ async def session_info(session_id=None):
 
 @app.post("/api/chat")
 async def api_chat(request: Request, username: str = Depends(authenticate_user)):
-    """Pure REST API endpoint for chat"""
-    data = await request.json()
-
-    session_id = data.get("session_id")
-    message = data.get("message", "")
-    model = data.get("model")
-
-    if not message:
-        return {"error": "Message is required"}
-
-    # Get or create session
-    session_id = get_or_create_session(username, session_id)
-    session_data = user_sessions[session_id]
-
-    # Use the selected model or keep current
-    if model and model in available_models:
-        session_data["model"] = model
-    elif not model:
-        model = session_data["model"]
-
-    # Add user message
-    session_data["messages"].append({"role": "user", "content": message})
-
-    try:
-        # o1 models don't support system messages, so filter them out
-        if model.startswith('o1'):
-            filtered_messages = [msg for msg in session_data["messages"] if msg["role"] != "system"]
-        else:
-            filtered_messages = session_data["messages"]
-
-        # response = client.chat.completions.create(
-        #     model=model,
-        #     messages=filtered_messages
-        # )
-        # reply = response.choices[0].message.content
-        query = message
-        reply, sources = ask_llm(query, retriever)
-
-    except Exception as e:
-        reply = f"Error with {model}: {e}"
-
-    # Add assistant response
-    session_data["messages"].append({"role": "assistant", "content": reply})
-
-    # Save chat history
-    save_chat_history(session_id)
-    cleanup_old_sessions()
-
-    return {
-        "session_id": session_id,
-        "model": session_data["model"],
-        "user_message": message,
-        "assistant_reply": reply,
-        "available_models": available_models,
-        "message_count": len(session_data["messages"])
-    }
+    pass
 
 def parse_source_line(src: str) -> Tuple[str, str]:
     """
@@ -525,6 +430,8 @@ async def api_chat_stream(
                     full_response += delta
 #                    print(f"Delta SSE received {delta}")
                     yield f"data: {json.dumps({'type':'content','content':delta})}\n\n"
+            
+            full_response = full_response.replace("](…/", "](/")
 
             # post‐process the complete answer
             full_response = RE_ROOTS_PATTERN.sub(lambda m: REPLACEMENTS[m.group(0)], full_response)
@@ -546,7 +453,7 @@ async def api_chat_stream(
                 full_response += src_md
 
             # save assistant turn
-            session_data["messages"].append({"role":"assistant", "content": full_response})
+            session_data["messages"].append({"role":"assistant", "model": model, "content": full_response})
             save_chat_history(session_id)
             cleanup_old_sessions()
 

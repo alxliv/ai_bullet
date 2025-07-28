@@ -453,7 +453,8 @@ def _demo_cli():  # pragma: no cover
 #        q = "Where class btMotionState is defined?"
 #        q = "Does Coriolis force is taken into account for bodies that fly around Earth?"
 #        q = "Explain struct LuaPhysicsSetup"
-        q = "In stepSimulation() why we need to clamp the number of substeps?"
+#        q = "In stepSimulation() why we need to clamp the number of substeps?"
+        q = "Describe DeformableDemo example"
 
         pass
     print("\n--- Question: ---")
