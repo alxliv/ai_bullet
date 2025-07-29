@@ -61,6 +61,10 @@
                 </select>
                 <form method="post" action="/new-chat" style="display: inline;">
                     <input type="hidden" name="session_id" value="{{ session_id }}">
+                    <label class="form-check-label" for="use_full_knowledge" style="margin-left: 1em;">
+                        <input type="checkbox" id="use_full_knowledge" name="use_full_knowledge">
+                        Use full knowledge
+                    </label>
                     <button type="submit" class="new-chat-btn">🔄 New Chat</button>
                 </form>
             </div>
@@ -187,7 +191,9 @@
     // 3) Open an EventSource to your SSE endpoint
     const params = new URLSearchParams({ session_id: sessionId,
                                         message: message,
-                                        model: model });
+                                        model: model,
+                                        use_full_knowledge: document.getElementById('use_full_knowledge').checked
+                                    });
     const es = new EventSource(`/api/chat-stream?${params}`);
 
     es.onmessage = evt => {

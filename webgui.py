@@ -388,6 +388,7 @@ async def api_chat_stream(
     session_id: str = Query(None),
     message: str   = Query(...),
     model:   str   = Query(None),
+    use_full_knowledge:  bool = Query(False),
     username: str  = Depends(authenticate_user),
 ):
     """
@@ -417,7 +418,7 @@ async def api_chat_stream(
 
             # kickoff retrieval + streaming LLM
             stream, sources = ask_llm(message, retriever,
-                                      model=model, streaming=True)
+                    model=model, use_full_knowledge=use_full_knowledge, streaming=True)
 
             # initial SSE event
             yield f"data: {json.dumps({'type':'start', 'session_id':session_id, 'model':model})}\n\n"
@@ -430,17 +431,21 @@ async def api_chat_stream(
                     full_response += delta
 #                    print(f"Delta SSE received {delta}")
                     yield f"data: {json.dumps({'type':'content','content':delta})}\n\n"
-            
+
             full_response = full_response.replace("](…/", "](/")
 
             # post‐process the complete answer
             full_response = RE_ROOTS_PATTERN.sub(lambda m: REPLACEMENTS[m.group(0)], full_response)
+            # only display sources whose score is above your relevance threshold
 
-            # append a SOURCES section (max 5)
-            if sources:
+            # filter by score
+            MIN_SOURCE_SCORE = 0.25
+            relevant = [s for s in sources if s["score"] >= MIN_SOURCE_SCORE]
+
+            # append a SOURCES section
+            if relevant:
                 src_md = "\n\n**SOURCES:**\n"
-                max_show = 5
-                for src in sources[:max_show]:
+                for src in relevant:
                     s = src["source"]
                     s = RE_ROOTS_PATTERN.sub(lambda m: REPLACEMENTS[m.group(0)], s)
 
@@ -449,6 +454,7 @@ async def api_chat_stream(
                     src_md += f"- [{name}]({url})"
                     if loc:
                         src_md += f" : {loc}"
+                    src_md += f" <score: {src['score']:.3f}>"
                     src_md += "\n"
                 full_response += src_md
 

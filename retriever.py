@@ -75,11 +75,23 @@ class RetrieverConfig:
     show_source_header: bool = True
     # How many results (k) to fetch per collection
     k_per_collection: Mapping[str,int] = MappingProxyType({"cpp_code":12, "bullet_docs":4})
-    # Build messages: system / user templates
+
+#   Build messages: system / user templates
+# prompt to use only CONTEXT to reply
     system_template: str = (
         "You are a precise assistant for C/C++ code and project documentation. "
         "Use only the given CONTEXT to answer. If unsure, say you don't know. "
-        "Format your responses in markdown, and use LaTeX math notation (enclosed in $...$) for mathematical expressions and formulas."
+        "Format your responses in markdown. To render mathematical expressions and formulas, use LaTeX math notation."
+        "Use $ ... $ for inline math or $$ ... $$ for block math."
+        "Cite sources by file path, page number and line numbers when available."
+    )
+
+# system prompt to use full knowledge for reply
+    system_template_full: str = (
+        "You are a precise assistant for C/C++ code and project documentation. "
+        "Use all your knowledge including Internat search to answer."
+        "Format your responses in markdown. To render mathematical expressions and formulas, use LaTeX math notation."
+        "Use $ ... $ for inline math or $$ ... $$ for block math."
         "Cite sources by file path, page number and line numbers when available."
     )
 
@@ -143,25 +155,20 @@ def _cosine_to_similarity(distance: float) -> float:
 
 
 def reciprocal_rank_fusion(list_of_lists: Sequence[Sequence[Hit]], b: int = 60) -> List[Hit]:
-    """Fuse multiple ranked lists of Hit using RRF.
+    """Fuse multiple ranked lists of Hit by summing each item's individual scores.
     Returns a single list of Hit with fused scores.
     """
     fused: Dict[str, Tuple[float, Hit]] = {}
     for lst in list_of_lists:
-        for rank, h in enumerate(lst, start=1):
-            contrib = 1.0 / (b + rank)
-            if h.id in fused:
-                fused[h.id] = (fused[h.id][0] + contrib, fused[h.id][1])
-            else:
-                # copy hit but replace score later
-                fused[h.id] = (contrib, h)
+        for h in lst:
+            fused[h.id] = (h.score, h)
+
     # overwrite scores with fused score
     out = []
     for _id, (score, h) in fused.items():
         out.append(Hit(id=h.id, score=score, document=h.document, metadata=h.metadata, collection_name=h.collection_name))
     out.sort(key=lambda x: x.score, reverse=True)
     return out
-
 
 def _guess_block_language(hit: Hit, cfg: RetrieverConfig) -> str:
     # Determine syntax highlighting language for fenced code blocks
@@ -362,8 +369,8 @@ class Retriever:
 
         return "\n\n".join(context_parts), sources
 
-    def build_messages(self, query: str, context: str) -> List[Dict[str, str]]:
-        system_msg = self.cfg.system_template
+    def build_messages(self, query: str, context: str, use_full_knowledge=False) -> List[Dict[str, str]]:
+        system_msg = self.cfg.system_template_full if use_full_knowledge else self.cfg.system_template
         user_msg = self.cfg.user_template.format(query=query, context=context)
         return [
             {"role": "system", "content": system_msg},
@@ -371,14 +378,15 @@ class Retriever:
         ]
 
 
-def ask_llm(query: str, retriever, model="gpt-4o-mini", streaming=False):
+def ask_llm(query: str, retriever, model="gpt-4o-mini", use_full_knowledge=False, streaming=False):
     # 1) retrieve + build context
     hits = retriever.retrieve(query)
     ctx, sources = retriever.build_context(hits)
-    messages = retriever.build_messages(query, ctx)
+    messages = retriever.build_messages(query, ctx, use_full_knowledge)
 
     # 2) call OpenAI
-    print("Calling OpenAI...")
+    know_str='full knowledge' if use_full_knowledge else 'only context'
+    print(f"Calling OpenAI [{know_str}]...")
     temperature = 1 if "o4-mini" in model else 0 # temperature is not supported (only 1) in o4-mini
     resp = retriever.oa.chat.completions.create(
         model=model,
@@ -454,9 +462,10 @@ def _demo_cli():  # pragma: no cover
 #        q = "Does Coriolis force is taken into account for bodies that fly around Earth?"
 #        q = "Explain struct LuaPhysicsSetup"
 #        q = "In stepSimulation() why we need to clamp the number of substeps?"
-        q = "Describe DeformableDemo example"
+#        q = "Describe DeformableDemo example"
+#        q = "What is Jacobi solver?"
+        q = "Explain b3TestTriangleAgainstAabb2"
 
-        pass
     print("\n--- Question: ---")
     print(q)
     answer, sources = ask_llm(q, retr)
