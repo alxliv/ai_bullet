@@ -1,16 +1,17 @@
-# AI Bullet
+# AI Bullet: AI-Powered RAG Chat UI for Project Documentation
 
-An AI-powered question-answering system specifically designed for the Bullet Physics library. This project provides an intelligent assistant that can answer questions about Bullet3 physics engine documentation and source code using Retrieval-Augmented Generation (RAG).
+A versatile Retrieval-Augmented Generation (RAG) chatbot designed to document and answer questions about **any software project** including source files and document collection of various types.
+The [Bullet3 library](https://github.com/bulletphysics/bullet3) was used as a `testbed` - as an example and for a demo.
 
 ## Project Goals
 
-AI Bullet aims to make the Bullet Physics library more accessible by providing:
+AI Bullet aims to make your software project more accessible by providing:
 
-- **Intelligent Documentation Search**: Query Bullet3 documentation using natural language instead of manual searching
-- **Code Understanding**: Ask questions about Bullet3 C++ source code with context-aware responses
+- **Intelligent Documentation Search**: Query all sources and documentation using natural language instead of manual searching
+- **Code Understanding**: Ask questions about your C++ source code with context-aware responses
 - **Comprehensive Knowledge Base**: Combines documentation, source code, and examples into a unified searchable database
 - **Developer Productivity**: Reduce time spent searching through documentation and source code
-- **Learning Support**: Help developers learn Bullet Physics concepts through interactive Q&A
+- **Learning Support**: Help developers to study your code base through interactive Q&A
 
 The system uses OpenAI's embedding models and ChromaDB for vector storage, enabling semantic search across multiple types of content including PDFs, documentation files, and C++ source code.
 
@@ -28,28 +29,28 @@ The system uses OpenAI's embedding models and ChromaDB for vector storage, enabl
 ```bash
 git clone https://github.com/alxliv/ai_bullet.git
 cd ai_bullet
+
+```
+1. **Install `uv` if not already installed:**
+```bash
+pip install uv
 ```
 
 2. **Install required packages:**
 ```bash
-pip install -r requirements.txt
+uv venv
+.venv\Scripts\activate
+uv pip install -r requirements.txt
 ```
-
-The main dependencies include:
-- `openai>=1.0.0` - OpenAI API client
-- `chromadb` - Vector database for embeddings
-- `fastapi` - Web framework for the UI
-- `tiktoken` - Token counting for OpenAI models
-- `tree_sitter` - C++ code parsing
-- `pypdf` - PDF document processing
-- `python-docx` - Word document processing
+> **Tip:** Use `uv` istead of just `pip`, uv runs much faster.
 
 ### Environment Setup
 
-1. **Create environment file:**
+1. **Create your private .env environment file:**
 ```bash
 cp .env_example .env
 ```
+> **Warning:** Do not commit your `.env` file to GitHub or any public repository. Keep it secret and out of version control.
 
 2. **Configure your settings in `.env`:**
 ```bash
@@ -75,26 +76,9 @@ CHUNK_SIZE = 800  # tokens/words
 CHUNK_OVERLAP = 50
 ```
 
-### Platform-Specific Notes
-
-**Windows:**
-- Use forward slashes or escaped backslashes in path configurations
-- Ensure Python is added to your PATH
-- Consider using Windows Subsystem for Linux (WSL) for better compatibility
-
-**macOS:**
-- Install Xcode command line tools: `xcode-select --install`
-- Use Homebrew for Python if needed: `brew install python`
-
-**Linux:**
-- Install development tools: `sudo apt-get install build-essential`
-- Ensure you have the latest pip: `python -m pip install --upgrade pip`
-
-## Usage
-
 ### Quick Start
 
-1. **Set up your Bullet3 data** (if you have access to Bullet3 repository):
+1. **Set up your Bullet3 data** :
 ```bash
 # Clone Bullet3 (optional - for full functionality)
 git clone https://github.com/bulletphysics/bullet3.git ~/work/rag_data/bullet3
@@ -103,7 +87,6 @@ git clone https://github.com/bulletphysics/bullet3.git ~/work/rag_data/bullet3
 2. **Update the knowledge base with documentation:**
 ```bash
 python updatedb_docs.py
-```
 
 3. **Update the knowledge base with source code:**
 ```bash
@@ -112,13 +95,12 @@ python updatedb_code.py
 
 4. **Start the web interface:**
 ```bash
-python webgui.py
+uvicorn webgui:app --host 127.0.0.1 --port 8000
 ```
 
 5. **Access the application:**
-Open your browser and navigate to `http://localhost:8501`
+Open your browser and navigate to `http://localhost:8000`
 
-### Command-Line Examples
 
 #### Database Population
 
@@ -221,15 +203,6 @@ Once set up, you can ask questions like:
 - "How does collision detection work in Bullet3?"
 - "What examples are available for soft body dynamics?"
 
-### Troubleshooting
-
-**Common Issues:**
-
-1. **ChromaDB errors**: Ensure `chroma_store/` directory has proper permissions
-2. **OpenAI API errors**: Verify your API key and check rate limits
-3. **Import errors**: Make sure all dependencies are installed: `pip install -r requirements.txt`
-4. **Path issues**: Use absolute paths or ensure relative paths are correct
-5. **Memory issues**: Reduce `CHUNK_SIZE` if processing large files
 
 **Logs and Debugging:**
 - Web interface logs appear in console when running `webgui.py`
@@ -237,3 +210,8 @@ Once set up, you can ask questions like:
 - Use `debug_server.py` for isolated testing
 
 For additional support, please check the project's issue tracker or create a new issue with detailed error information.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+

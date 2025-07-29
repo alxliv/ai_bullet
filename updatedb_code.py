@@ -1,14 +1,12 @@
-import os, tiktoken
-from tree_sitter import Language, Parser
-import tree_sitter_cpp as tscpp
+import os
 from dotenv import load_dotenv
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
 
-from openai import OpenAI, BadRequestError
+from openai import OpenAI
 import tiktoken
 import chromadb
 import hashlib
-from collections import defaultdict, Counter
+from collections import defaultdict
 import lizard
 from pathlib import Path
 
@@ -161,9 +159,6 @@ print(f"All {len(all_chunks)} chunks from {SOURCES_FULL_PATH} collected.")
 all_chunks_examples = walk_repo_and_chunk(EXAMPLES_FULL_PATH)
 print(f"All {len(all_chunks_examples)} chunks from {EXAMPLES_FULL_PATH} collected.")
 all_chunks += all_chunks_examples
-
-import chromadb
-from openai import OpenAI
 
 def get_existing_ids(collection):
     """Return a set of all IDs already stored."""

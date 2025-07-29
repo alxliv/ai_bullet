@@ -19,7 +19,7 @@ from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 from typing import Tuple
 from fastapi import Query
 
-version = "1.18.0"
+version = "1.18.1"
 print(f"Version: {version}")
 
 # ANSI escape codes for colors
