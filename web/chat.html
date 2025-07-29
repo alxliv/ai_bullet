@@ -24,7 +24,7 @@
     <div class="container">
         <h1>X-Flight AI Knowledge Base</h1>
         <h2 style="text-align: center;">
-            DEMO: contains <em><u>specific</u></em> knowledge about
+            DEMO: contains <em>specific</em> knowledge about
             <a href="https://github.com/bulletphysics/bullet3" target="_blank" rel="noopener noreferrer">bullet3</a>
         </h2>
 
@@ -61,10 +61,6 @@
                 </select>
                 <form method="post" action="/new-chat" style="display: inline;">
                     <input type="hidden" name="session_id" value="{{ session_id }}">
-                    <label class="form-check-label" for="use_full_knowledge" style="margin-left: 1em;">
-                        <input type="checkbox" id="use_full_knowledge" name="use_full_knowledge">
-                        Use full knowledge
-                    </label>
                     <button type="submit" class="new-chat-btn">🔄 New Chat</button>
                 </form>
             </div>
@@ -73,6 +69,10 @@
                 <input type="hidden" name="session_id" value="{{ session_id }}">
                 <div class="input-row">
                     <input type="text" name="message" placeholder="Type your message here..." required autofocus>
+                    <label class="form-check-label" for="use_full_knowledge" style="margin-left: 1em; font-size: 0.85em;">
+                        <input type="checkbox" id="use_full_knowledge" name="use_full_knowledge">
+                        <small>Use full knowledge</small>
+                    </label>
                     <button type="submit">Send</button>
                 </div>
             </form>

@@ -19,7 +19,7 @@ from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 from typing import Tuple
 from fastapi import Query
 
-version = "1.17.9"
+version = "1.18.0"
 print(f"Version: {version}")
 
 # ANSI escape codes for colors
@@ -209,7 +209,7 @@ def get_or_create_session(username, session_id=None):
     return session_id
 
 def get_available_models():
-    return ['gpt-3.5-turbo', 'gpt-4-turbo', 'gpt-4o', 'gpt-4.1', 'o4-mini']
+    return ['gpt-4o', 'gpt-3.5-turbo', 'gpt-4-turbo', 'gpt-4.1', 'o4-mini']
 
 
 # Initialize available models on startup
@@ -440,7 +440,12 @@ async def api_chat_stream(
 
             # filter by score
             MIN_SOURCE_SCORE = 0.25
+            VERY_MIN_SOURCE_SCORE = 0.08
             relevant = [s for s in sources if s["score"] >= MIN_SOURCE_SCORE]
+            if not relevant:
+                relevant = [s for s in sources if s["score"] >= VERY_MIN_SOURCE_SCORE]
+                if relevant:
+                    relevant = relevant[:3]
 
             # append a SOURCES section
             if relevant:

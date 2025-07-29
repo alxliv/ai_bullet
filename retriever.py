@@ -464,7 +464,8 @@ def _demo_cli():  # pragma: no cover
 #        q = "In stepSimulation() why we need to clamp the number of substeps?"
 #        q = "Describe DeformableDemo example"
 #        q = "What is Jacobi solver?"
-        q = "Explain b3TestTriangleAgainstAabb2"
+#        q = "Explain b3TestTriangleAgainstAabb2"
+        q = "What are Bullet Basic Data Types?"
 
     print("\n--- Question: ---")
     print(q)
