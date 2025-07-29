@@ -15,6 +15,29 @@ AI Bullet aims to make your software project more accessible by providing:
 
 The system uses OpenAI's embedding models and ChromaDB for vector storage, enabling semantic search across multiple types of content including PDFs, documentation files, and C++ source code.
 
+## Features
+
+- **Real-time streaming** of LLM output via SSE
+- **Retrieval from multiple sources** (source code + documentation)
+- **Reciprocal Rank Fusion (RRF)** + optional MMR or LLM re-rank
+- **Token-budgeted context** with syntax-highlighted code blocks
+- **Configurable system prompts** (context-only vs. full-knowledge)
+- **Automatic source citation** in Markdown
+- **Simple web-based chat UI**
+
+---
+
+## Project Structure
+
+- **webgui.py**: FastAPI backend serving the chat UI, managing sessions, streaming responses, and retrieving relevant snippets from ChromaDB.
+- **chat.html**: Front-end UI (HTML + vanilla JS) for chat interaction, streaming display, markdown rendering, and source link handling.
+- **retriever.py**: Handles query embedding, multi-collection retrieval, fusion, context construction, and message building.
+- **updatadb_code.py**: Script for ingesting source code files into ChromaDB.
+- **updatedb_docs.py**: Script for ingesting documentation files into ChromaDB.
+- **config.py**: Central configuration for paths, collections, and model/API parameters.
+
+---
+
 ## Installation
 
 ### Prerequisites
@@ -69,48 +92,29 @@ CHROMA_TELEMETRY=False
 ```python
 EMBEDDING_MODEL = 'text-embedding-3-small'  # Or text-embedding-ada-002
 CHROMA_DB_DIR = 'chroma_store/'
-DOCUMENTS_PATH = '~/work/rag_data/bullet3/docs'  # Path to Bullet3 docs
-SOURCES_PATH = '~/work/rag_data/bullet3/src'     # Path to Bullet3 source
+DOCUMENTS_PATH = '~/work/rag_data/bullet3/docs'   # Path to Bullet3 docs
+SOURCES_PATH = '~/work/rag_data/bullet3/src'      # Path to Bullet3 source
 EXAMPLES_PATH = "~/work/rag_data/bullet3/examples"  # Path to examples
-CHUNK_SIZE = 800  # tokens/words
+CHUNK_SIZE = 800
 CHUNK_OVERLAP = 50
 ```
+> **Note:** Ensure that `DOCUMENTS_PATH`, `SOURCES_PATH`, and `EXAMPLES_PATH` in `config.py` correctly correspond to the folders in your cloned Bullet3 repository.
 
-### Quick Start
-
-1. **Set up your Bullet3 data** :
+4. **Set up your Bullet3 data** :
 ```bash
 # Clone Bullet3 (optional - for full functionality)
 git clone https://github.com/bulletphysics/bullet3.git ~/work/rag_data/bullet3
 ```
 
-2. **Update the knowledge base with documentation:**
-```bash
-python updatedb_docs.py
-
-3. **Update the knowledge base with source code:**
-```bash
-python updatedb_code.py
-```
-
-4. **Start the web interface:**
-```bash
-uvicorn webgui:app --host 127.0.0.1 --port 8000
-```
-
-5. **Access the application:**
-Open your browser and navigate to `http://localhost:8000`
-
-
 #### Database Population
 
-**Index documentation files:**
+**Process documentation files:**
 ```bash
 # Process PDFs, DOCX, Markdown, and text files
 python updatedb_docs.py
 ```
 
-**Index C++ source code:**
+**Process C++ source code:**
 ```bash
 # Parse and index C++ files with syntax awareness
 python updatedb_code.py
@@ -127,8 +131,12 @@ python webgui.py
 ```bash
 uvicorn webgui:app --host 0.0.0.0 --port 8501 --reload
 ```
+Or for localhost testing:
+```bash
+uvicorn webgui:app --host 127.0.0.1 --port 8000 --reload
+```
 
-**Debug server (for testing):**
+**Debug server (for testing math LaTex display):**
 ```bash
 python debug_server.py
 ```
@@ -164,18 +172,6 @@ Configure in `config.py`:
 - `CHUNK_OVERLAP`: Overlap between consecutive chunks
 - `CHROMA_DB_DIR`: Directory for vector database storage
 
-#### Advanced Configuration
-
-**Retriever parameters** (in `retriever.py`):
-```python
-config = RetrieverConfig(
-    k_per_collection={"cpp_code": 12, "bullet_docs": 4},
-    use_mmr=True,
-    mmr_diversity_bias=0.1,
-    context_budget_tokens=4000
-)
-```
-
 ### Basic Workflow
 
 1. **Preparation Phase:**
@@ -202,12 +198,13 @@ Once set up, you can ask questions like:
 - "Explain the constraint solver implementation"
 - "How does collision detection work in Bullet3?"
 - "What examples are available for soft body dynamics?"
+- "Where class btMotionState is defined?"
 
 
 **Logs and Debugging:**
 - Web interface logs appear in console when running `webgui.py`
-- Check browser developer tools for frontend issues
 - Use `debug_server.py` for isolated testing
+- Messages for all sessions are recorded in the `saved_chats` folder
 
 For additional support, please check the project's issue tracker or create a new issue with detailed error information.
 
