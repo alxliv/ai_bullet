@@ -1,6 +1,6 @@
 # AI Bullet: AI-Powered RAG Chat UI for Project Documentation
 
-A versatile Retrieval-Augmented Generation (RAG) chatbot designed to document and answer questions about **any software project** including source files and document collection of various types.
+A versatile Retrieval-Augmented Generation (RAG) chatbot designed to document and answer questions about **any software project** that includes source files and document collection of various types.
 The [Bullet3 library](https://github.com/bulletphysics/bullet3) was used as a `testbed` - as an example and for a demo.
 
 ## Project Goals
@@ -17,10 +17,10 @@ The system uses OpenAI's embedding models and ChromaDB for vector storage, enabl
 
 ## Features
 
-- **Real-time streaming** of LLM output via SSE
+- **Real-time streaming** of LLM output via SSE (Work in progress)
 - **Retrieval from multiple sources** (source code + documentation)
-- **Reciprocal Rank Fusion (RRF)** + optional MMR or LLM re-rank
-- **Token-budgeted context** with syntax-highlighted code blocks
+- **Reciprocal Rank Fusion (RRF)** + optional LLM re-rank (Currently score-based fusion is implemented, no RRF)
+- **Token-budgeted context**
 - **Configurable system prompts** (context-only vs. full-knowledge)
 - **Automatic source citation** in Markdown
 - **Simple web-based chat UI**
@@ -98,7 +98,7 @@ EXAMPLES_PATH = "~/work/rag_data/bullet3/examples"  # Path to examples
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 50
 ```
-> **Note:** Ensure that `DOCUMENTS_PATH`, `SOURCES_PATH`, and `EXAMPLES_PATH` in `config.py` correctly correspond to the folders in your cloned Bullet3 repository.
+> **Note:** Ensure that `DOCUMENTS_PATH`, `SOURCES_PATH`, and `EXAMPLES_PATH` in `config.py` correctly correspond to the folders in your cloned Bullet3 repository. Use provided config_win.py (Windows) or config_posix.py (Linux) as template for your config.py.
 
 4. **Set up your Bullet3 data** :
 ```bash
@@ -118,6 +118,12 @@ python updatedb_docs.py
 ```bash
 # Parse and index C++ files with syntax awareness
 python updatedb_code.py
+```
+
+** You can also run retriever.py as standalone:
+```bash
+# Parse and index C++ files with syntax awareness
+python retriever.py
 ```
 
 #### Running the Web Interface
@@ -185,8 +191,9 @@ Configure in `config.py`:
    - Verify ChromaDB collections are created
 
 3. **Usage Phase:**
-   - Start web interface with `python webgui.py`
-   - Access at `http://localhost:8501`
+   - Run retriever.py as standalone, for testing
+   - Start local web interface with `uvicorn webgui:app --host 127.0.0.1 --port 8000`
+   - Access at `http://localhost:8000`
    - Log in with configured credentials
    - Ask questions about Bullet Physics
 
@@ -203,7 +210,7 @@ Once set up, you can ask questions like:
 
 **Logs and Debugging:**
 - Web interface logs appear in console when running `webgui.py`
-- Use `debug_server.py` for isolated testing
+- Use `debug_server.py` for isolated testing (Only tot test math formulas display)
 - Messages for all sessions are recorded in the `saved_chats` folder
 
 For additional support, please check the project's issue tracker or create a new issue with detailed error information.
