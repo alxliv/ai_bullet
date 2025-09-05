@@ -49,7 +49,6 @@ import chromadb
 from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
-from types import MappingProxyType
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
@@ -59,58 +58,69 @@ load_dotenv()
 # Data structures
 # ----------------------------
 
-@dataclass
 class RetrieverConfig:
-    embedding_model: str = EMBEDDING_MODEL
-    distance_metric: str = "cosine"  # assume Chroma collection uses cosine
-    rrf_b: int = 60                   # RRF hyperparameter
-    mmr_lambda: float = 0.5           # 0 -> diversity only, 1 -> relevance only
-    use_mmr: bool = True             # turn on if you want diversity
-    max_context_tokens: int = 6000    # budget for snippets
-    max_snippets: int = 12            # hard cap on snippets even if under token budget
-    code_lang_key: str = "node_type"  # metadata key that tells us if it's code
-    code_lang_values: Sequence[str] = ("function", "leftover_block")  # values that indicate code
-    default_code_lang: str = "cpp"
-    default_doc_lang: str = "markdown"
-    show_source_header: bool = True
-    # How many results (k) to fetch per collection
-    k_per_collection: Mapping[str,int] = MappingProxyType({"cpp_code":12, "bullet_docs":4})
+    def __init__(
+        self,
+        embedding_model: str = EMBEDDING_MODEL,
+        distance_metric: str = "cosine",
+        rrf_b: int = 60,
+        mmr_lambda: float = 0.5,
+        use_mmr: bool = True,
+        max_context_tokens: int = 6000,
+        max_snippets: int = 12,
+        code_lang_key: str = "node_type",
+        code_lang_values: Sequence[str] = ("function", "leftover_block"),
+        default_code_lang: str = "cpp",
+        default_doc_lang: str = "markdown",
+        show_source_header: bool = True,
+        # default to empty dict (override per collection in retrieve with .get(name, 5))
+        k_per_collection: Dict[str, int] = {},
+        system_template: str = (
+            "You are a precise assistant for C/C++ code and project documentation. "
+            "Use only the given CONTEXT to answer. If unsure, say you don't know. "
+            "Format your responses in markdown. To render mathematical expressions and formulas, use LaTeX math notation."
+            "Use $ ... $ for inline math or $$ ... $$ for block math."
+            "Cite sources by file path, page number and line numbers when available."
+        ),
+        system_template_full: str = (
+            "You are a precise assistant for C/C++ code and project documentation. "
+            "Use all your knowledge including Internat search to answer."
+            "Format your responses in markdown. To render mathematical expressions and formulas, use LaTeX math notation."
+            "Use $ ... $ for inline math or $$ ... $$ for block math."
+            "Cite sources by file path, page number and line numbers when available."
+        ),
+        user_template: str = (
+            "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
+            "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](path) : page,line-range)."
+        ),
+        use_llm_rerank: bool = False,
+        llm_rerank_model: str = "gpt-3.5-turbo",
+        max_candidates_for_rerank: int = 30,
+        llm_rerank_max_chunk_tokens: int = 512,
+    ):
+        self.embedding_model = embedding_model
+        self.distance_metric = distance_metric
+        self.rrf_b = rrf_b
+        self.mmr_lambda = mmr_lambda
+        self.use_mmr = use_mmr
+        self.max_context_tokens = max_context_tokens
+        self.max_snippets = max_snippets
+        self.code_lang_key = code_lang_key
+        self.code_lang_values = code_lang_values
+        self.default_code_lang = default_code_lang
+        self.default_doc_lang = default_doc_lang
+        self.show_source_header = show_source_header
+        # copy to avoid accidental sharing if multiple instances are ever created
+        self.k_per_collection = dict(k_per_collection)
+        self.system_template = system_template
+        self.system_template_full = system_template_full
+        self.user_template = user_template
+        self.use_llm_rerank = use_llm_rerank
+        self.llm_rerank_model = llm_rerank_model
+        self.max_candidates_for_rerank = max_candidates_for_rerank
+        self.llm_rerank_max_chunk_tokens = llm_rerank_max_chunk_tokens
 
-#   Build messages: system / user templates
-# prompt to use only CONTEXT to reply
-    system_template: str = (
-        "You are a precise assistant for C/C++ code and project documentation. "
-        "Use only the given CONTEXT to answer. If unsure, say you don't know. "
-        "Format your responses in markdown. To render mathematical expressions and formulas, use LaTeX math notation."
-        "Use $ ... $ for inline math or $$ ... $$ for block math."
-        "Cite sources by file path, page number and line numbers when available."
-    )
-
-# system prompt to use full knowledge for reply
-    system_template_full: str = (
-        "You are a precise assistant for C/C++ code and project documentation. "
-        "Use all your knowledge including Internat search to answer."
-        "Format your responses in markdown. To render mathematical expressions and formulas, use LaTeX math notation."
-        "Use $ ... $ for inline math or $$ ... $$ for block math."
-        "Cite sources by file path, page number and line numbers when available."
-    )
-
-    user_template: str = (
-        "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
-        "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](path) : page,line-range)."
-    )
-
-    use_llm_rerank: bool = False
-    llm_rerank_model: str = "gpt-3.5-turbo" # "gpt-4o-mini"
-    max_candidates_for_rerank: int = 30
-    llm_rerank_max_chunk_tokens: int = 512
-
-def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-    dot = sum(x*y for x,y in zip(a,b))
-    norm_a = math.sqrt(sum(x*x for x in a))
-    norm_b = math.sqrt(sum(y*y for y in b))
-    return dot/(norm_a*norm_b) if norm_a and norm_b else 0.0
-
+# Keep Hit as a dataclass
 @dataclass
 class Hit:
     id: str
@@ -224,6 +234,13 @@ class Retriever:
         self.collections = dict(collections)
         self.cfg = config or RetrieverConfig()
         self.oa = openai_client or OpenAI()
+        try:
+            resp = self.oa.models.list()
+            print("Available models:")
+            for m in resp.data:
+                print(f"{m.id}")
+        except Exception as e:
+            print(f"Error fetching models from OpenAI: {e}")
 
     # --------- Embedding ---------
     def embed_query(self, query: str) -> List[float]:
@@ -387,7 +404,8 @@ def ask_llm(query: str, retriever, model="gpt-4o-mini", use_full_knowledge=False
     # 2) call OpenAI
     know_str='full knowledge' if use_full_knowledge else 'only context'
     print(f"Calling OpenAI [{know_str}]...")
-    temperature = 1 if "o4-mini" in model else 0 # temperature is not supported (only 1) in o4-mini
+    temperature = 1 if ("-mini" in model or "-nano" in model) else 0  # set 1 for mini/nano models, else 0
+
     resp = retriever.oa.chat.completions.create(
         model=model,
         messages=messages,
@@ -464,8 +482,8 @@ def _demo_cli():  # pragma: no cover
 #        q = "In stepSimulation() why we need to clamp the number of substeps?"
 #        q = "Describe DeformableDemo example"
 #        q = "What is Jacobi solver?"
-#        q = "Explain b3TestTriangleAgainstAabb2"
-        q = "What are Bullet Basic Data Types?"
+        q = "Explain b3TestTriangleAgainstAabb2"
+#        q = "What are Bullet Basic Data Types?"
 
     print("\n--- Question: ---")
     print(q)

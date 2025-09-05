@@ -18,6 +18,7 @@ from retriever import Retriever, create_retriever, ask_llm
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 from typing import Tuple
 from fastapi import Query
+from pathlib import Path
 
 version = "1.18.1"
 print(f"Version: {version}")
@@ -144,11 +145,20 @@ DOCS_ROOT = os.path.expanduser(DOCUMENTS_PATH)
 SRC_ROOT = os.path.expanduser(SOURCES_PATH)
 EXAMPLES_ROOT = os.path.expanduser(EXAMPLES_PATH)
 
+# FIXME!!! should fix how path are stored in ChromaDB (I use chromadb that was created on Oracle VPS, so there is /home/ubuntu/work...)
+# Should fix the way location of data is stored in CHROMADB!!!
+print("Remember to fix how data references are stored in DB!")
+
+
+DOCS_ROOT_REF = "/home/ubuntu/work/rag_data/bullet3/docs" # os.path.expanduser(DOCUMENTS_PATH)
+SRC_ROOT_REF = "/home/ubuntu/work/rag_data/bullet3/src"  # os.path.expanduser(SOURCES_PATH)
+EXAMPLES_ROOT_REF = "/home/ubuntu/work/rag_data/bullet3/examples" # os.path.expanduser(EXAMPLES_PATH)
+
 REPLACEMENTS = {}
 for root, alias in (
-    (DOCS_ROOT,    "/docs"),
-    (SRC_ROOT,     "/src"),
-    (EXAMPLES_ROOT, "/examples"),
+    (DOCS_ROOT_REF,    "/docs"),
+    (SRC_ROOT_REF,     "/src"),
+    (EXAMPLES_ROOT_REF, "/examples"),
 ):
     # map both the absolute path and the same string without leading slash
     REPLACEMENTS[root] = alias
@@ -209,7 +219,7 @@ def get_or_create_session(username, session_id=None):
     return session_id
 
 def get_available_models():
-    return ['gpt-4o', 'gpt-3.5-turbo', 'gpt-4-turbo', 'gpt-4.1', 'o4-mini']
+    return ['gpt-4.1', 'gpt-5-nano','gpt-5-mini', 'gpt-4o', 'gpt-3.5-turbo', 'gpt-4-turbo', 'o4-mini']
 
 
 # Initialize available models on startup
@@ -266,6 +276,10 @@ async def chat_page(request: Request, session_id = None, username: str = Depends
     all_messages = session_data["messages"]
     user_messages = [msg for msg in all_messages if msg["role"] != "system"]
     chat_history = user_messages[-10:] if len(user_messages) > 0 else []
+    examples = "What is Jacobi solver?<br>" +\
+        "Describe DeformableDemo<br>" +\
+        "What value of timeStep is recommended for the integration?<br>" +\
+        "Explain struct LuaPhysicsSetup<br>"
 
     return templates.TemplateResponse("chat.html", {
         "request": request,
@@ -274,6 +288,7 @@ async def chat_page(request: Request, session_id = None, username: str = Depends
         "available_models": available_models,
         "session_id": session_id,
         "username": username,
+        "example_questions": examples,
         "version": version
     })
 
@@ -377,8 +392,12 @@ def parse_source_line(src: str) -> Tuple[str, str]:
     if ":" in src:
         file_path, page_line = src.split(":", 1)
     else:
-        page_line=""
+        page_line = ""
         file_path = src
+    # Replace '/home/ubuntu/' with the current user's home at runtime
+    home_prefix = str(Path.home()) + "/"
+    if file_path.startswith("/home/ubuntu/"):
+        file_path = home_prefix + file_path[len("/home/ubuntu/"):]
     return file_path.strip(), page_line.strip()
 
 from fastapi import Query
@@ -389,7 +408,7 @@ async def api_chat_stream(
     message: str   = Query(...),
     model:   str   = Query(None),
     use_full_knowledge:  bool = Query(False),
-    username: str  = Depends(authenticate_user),
+    username: str  = Depends(authenticate_user)
 ):
     """
     Streaming chat endpoint using Server-Sent Events.
@@ -502,6 +521,6 @@ def cleanup_old_sessions():
 if __name__ == "__main__":
     import uvicorn
     print("before unicorn run")
-    uvicorn.run("webgui:app", host="0.0.0.0", port=8501, reload=False)
+    uvicorn.run("webgui:app", host="127.0.0.1", port=8000, reload=False)
 
-# To run: uvicorn webgui:app --host 0.0.0.0 --port 8501
+# To run: uvicorn webgui:app --host 127.0.0.1 --port 8000
