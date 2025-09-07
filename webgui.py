@@ -219,7 +219,7 @@ def get_or_create_session(username, session_id=None):
     return session_id
 
 def get_available_models():
-    return ['gpt-4.1', 'gpt-5-nano','gpt-5-mini', 'gpt-4o', 'gpt-3.5-turbo', 'gpt-4-turbo', 'o4-mini']
+    return ['gpt-4o', 'gpt-4.1', 'gpt-5-nano','gpt-5-mini','gpt-3.5-turbo', 'gpt-4-turbo', 'o4-mini']
 
 
 # Initialize available models on startup
@@ -279,7 +279,8 @@ async def chat_page(request: Request, session_id = None, username: str = Depends
     examples = "What is Jacobi solver?<br>" +\
         "Describe DeformableDemo<br>" +\
         "What value of timeStep is recommended for the integration?<br>" +\
-        "Explain struct LuaPhysicsSetup<br>"
+        "Explain struct LuaPhysicsSetup<br>" +\
+        "How collisions are calculated?"
 
     return templates.TemplateResponse("chat.html", {
         "request": request,
@@ -452,7 +453,7 @@ async def api_chat_stream(
                     yield f"data: {json.dumps({'type':'content','content':delta})}\n\n"
 
             full_response = full_response.replace("](…/", "](/")
-
+            full_response = full_response.replace("](../rag_data/bullet3", "](/home/ubuntu/work/rag_data/bullet3")
             # post‐process the complete answer
             full_response = RE_ROOTS_PATTERN.sub(lambda m: REPLACEMENTS[m.group(0)], full_response)
             # only display sources whose score is above your relevance threshold
