@@ -297,12 +297,6 @@ async def chat_page(request: Request, session_id = None, username: str = Depends
 async def chat_submit(request: Request, message: str = Form(...), model: str = Form(None), session_id: str = Form(None), username: str = Depends(authenticate_user)):
     pass
 
-@app.get("/favicon.ico")
-async def favicon():
-    """Serve favicon file"""
-    from fastapi.responses import FileResponse
-    return FileResponse("web/favicon.ico")
-
 @app.get("/favicon.svg")
 async def favicon_svg():
     """Serve SVG favicon file"""
