@@ -227,12 +227,17 @@ class ChatRequest(BaseModel):
         default=DEFAULT_MODEL,
         description="OpenAI model to use for the response"
     )
+    use_full_knowledge: bool = Field(
+        default=False,
+        description="Use full LLM knowledge instead of only RAG context"
+    )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "message": "What is the derivative of x^2?",
-                "model": "gpt-4o-mini"
+                "model": "gpt-4o-mini",
+                "use_full_knowledge": False
             }
         }
 
@@ -284,7 +289,7 @@ async def index(request: Request):
             detail="Failed to load frontend"
         )
 
-async def stream_openai_response(message: str, model: str) -> AsyncGenerator[str, None]:
+async def stream_openai_response(message: str, model: str, use_full_knowledge: bool = False) -> AsyncGenerator[str, None]:
     """Stream responses from OpenAI API using Server-Sent Events format"""
     client = get_openai_client()
 
@@ -296,7 +301,7 @@ async def stream_openai_response(message: str, model: str) -> AsyncGenerator[str
     try:
         hits = retriever.retrieve(message)
         ctx, sources = retriever.build_context(hits)
-        messages = retriever.build_messages(message, ctx)
+        messages = retriever.build_messages(message, ctx, use_full_knowledge=use_full_knowledge)
 
         # Use max_completion_tokens for GPT-5 models, max_tokens for others
         token_param = "max_completion_tokens" if model.startswith("gpt-5") else "max_tokens"
@@ -320,7 +325,7 @@ async def stream_openai_response(message: str, model: str) -> AsyncGenerator[str
                 yield f"data: {response.model_dump_json()}\n\n"
 
         yield "data: [DONE]\n\n"
-        elapsed_sec = (time.perf_counter() - start_time) * 1000 * 1000
+        elapsed_sec = time.perf_counter() - start_time
         logger.info(f"Response streaming completed successfully in {elapsed_sec:.2f} sec")
 
     except Exception as e:
@@ -354,10 +359,10 @@ async def chat(request: ChatRequest):
     # record user turn
     session_data["messages"].append({"role": "user", "content": request.message})
 
-    logger.info(f"Chat request: model={request.model}, message_length={len(request.message)}")
+    logger.info(f"Chat request: model={request.model}, message_length={len(request.message)}, use_full_knowledge={request.use_full_knowledge}")
 
     return StreamingResponse(
-        stream_openai_response(request.message, request.model),
+        stream_openai_response(request.message, request.model, request.use_full_knowledge),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

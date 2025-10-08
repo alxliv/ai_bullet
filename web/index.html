@@ -53,6 +53,10 @@
                     <select id="modelSelect" aria-label="OpenAI model">
                         <option value="" disabled selected>Loading models...</option>
                     </select>
+                    <div class="checkbox-container">
+                        <input type="checkbox" id="useFullKnowledge" aria-label="Use full knowledge">
+                        <label for="useFullKnowledge">Use full knowledge</label>
+                    </div>
                 </div>
                 <div class="input-group">
                     <input type="text" id="messageInput" placeholder="Query documentation or source code...">
@@ -261,6 +265,12 @@
 
                 if (selectedModel) {
                     payload.model = selectedModel;
+                }
+
+                // Add use_full_knowledge flag from checkbox
+                const useFullKnowledgeCheckbox = document.getElementById('useFullKnowledge');
+                if (useFullKnowledgeCheckbox) {
+                    payload.use_full_knowledge = useFullKnowledgeCheckbox.checked;
                 }
 
                 const response = await fetch('/chat', {
