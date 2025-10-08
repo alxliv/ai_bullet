@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAI Math Chat</title>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="mask-icon" href="/static/favicon.svg" color="#667eea">
+
+    <!-- Marked.js for Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- KaTeX for Math Rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+
+    <!-- Application Styles -->
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>OpenAI Math Chat</h1>
+        <div class="version">v. {{ version }}</div>
+        <div class="chat-container">
+            <div class="messages" id="messages">
+                <div class="message">
+                    <div class="ai-message" id="welcome-message">
+                        <p>Hello {{ username }}! I can help you with mathematical questions. I render LaTeX formulas beautifully!</p>
+                        <p><strong>Examples:</strong></p>
+                        <p>1. The quadratic formula is $$x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$$</p>
+                        <p>2. \( \mathcal{L} \) of a function \( f(t) \) defined for \( t \geq 0 \)</p>
+                        <p><strong>Try asking me about:</strong></p>
+                        <ul>
+                            <li>Calculus concepts and derivatives</li>
+                            <li>Linear algebra and matrices</li>
+                            <li>Statistics and probability</li>
+                            <li>Any mathematical proof or theorem</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="input-area">
+                <div class="model-selector">
+                    <label for="modelSelect">Model:</label>
+                    <select id="modelSelect" aria-label="OpenAI model">
+                        <option value="" disabled selected>Loading models...</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <input type="text" id="messageInput" placeholder="Ask a math question...">
+                    <button id="sendButton">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Wait for libraries to load
+        window.addEventListener('DOMContentLoaded', function() {
+            // Configure marked
+            marked.setOptions({
+                breaks: true,
+                gfm: true,
+                headerIds: false,
+                mangle: false
+            });
+
+            // Render initial math example
+            setTimeout(() => {
+                renderMathInElement(document.getElementById('welcome-message'), {
+                    delimiters: [
+                        {left: '$$', right: '$$', display: true},
+                        {left: '$', right: '$', display: false},
+                        {left: '\\(', right: '\\)', display: false},
+                        {left: '\\[', right: '\\]', display: true}
+                    ],
+                    throwOnError: false,
+                    strict: false
+                });
+            }, 100);
+
+            // Load available models from the server
+            loadModels();
+
+            // Set up event listeners
+            document.getElementById('sendButton').addEventListener('click', sendMessage);
+            document.getElementById('messageInput').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') sendMessage();
+            });
+
+            // Focus input
+            document.getElementById('messageInput').focus();
+        });
+
+        let accumulatedContent = '';
+
+        async function loadModels() {
+            const modelSelect = document.getElementById('modelSelect');
+            if (!modelSelect) return;
+
+            modelSelect.disabled = true;
+            modelSelect.dataset.disablePermanent = 'false';
+
+            try {
+                const response = await fetch('/models');
+                if (!response.ok) {
+                    throw new Error('Failed to load models');
+                }
+
+                const data = await response.json();
+                if (!data || !Array.isArray(data.models) || data.models.length === 0) {
+                    throw new Error('No models available');
+                }
+
+                modelSelect.innerHTML = '';
+                data.models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model;
+                    option.textContent = model;
+                    modelSelect.appendChild(option);
+                });
+
+                const defaultModel = data.default_model && data.models.includes(data.default_model)
+                    ? data.default_model
+                    : data.models[0];
+
+                modelSelect.value = defaultModel;
+                modelSelect.dataset.defaultModel = defaultModel;
+                delete modelSelect.dataset.disablePermanent;
+                modelSelect.disabled = false;
+            } catch (error) {
+                console.error('Failed to load models:', error);
+                modelSelect.innerHTML = '<option value="" disabled selected>Models unavailable</option>';
+                modelSelect.dataset.disablePermanent = 'true';
+                modelSelect.dataset.defaultModel = '';
+                modelSelect.disabled = true;
+            }
+        }
+
+        function processContent(text) {
+            // Temporarily store LaTeX expressions to protect them from markdown parsing
+            const expressions = [];
+            let processed = text;
+
+            // Replace display math with placeholders
+            processed = processed.replace(/\$\$([\s\S]*?)\$\$/g, function(match) {
+                expressions.push(match);
+                return '%%%MATH_' + (expressions.length - 1) + '%%%';
+            });
+
+            // Replace inline math with placeholders
+            processed = processed.replace(/\$([^\$]+?)\$/g, function(match) {
+                expressions.push(match);
+                return '%%%MATH_' + (expressions.length - 1) + '%%%';
+            });
+
+            // Protect \( ... \) inline math
+            processed = processed.replace(/\\\(([\s\S]*?)\\\)/g, function(match) {
+                expressions.push(match);
+                return '%%%MATH_' + (expressions.length - 1) + '%%%';
+            });
+
+            // Protect \[ ... \] display math
+            processed = processed.replace(/\\\[([\s\S]*?)\\\]/g, function(match) {
+                expressions.push(match);
+                return '%%%MATH_' + (expressions.length - 1) + '%%%';
+            });
+
+            // Parse markdown
+            let html = marked.parse(processed);
+
+            // Restore LaTeX expressions
+            for (let i = 0; i < expressions.length; i++) {
+                html = html.replace('%%%MATH_' + i + '%%%', expressions[i]);
+            }
+
+            return html;
+        }
+
+        function renderMathSafely(element) {
+            try {
+                renderMathInElement(element, {
+                    delimiters: [
+                        {left: '$$', right: '$$', display: true},
+                        {left: '$', right: '$', display: false},
+                        {left: '\\(', right: '\\)', display: false},
+                        {left: '\\[', right: '\\]', display: true}
+                    ],
+                    throwOnError: false,
+                    strict: false,
+                    trust: false,
+                    macros: {}
+                });
+
+                // Force reflow to prevent layout issues
+                element.offsetHeight;
+
+            } catch (error) {
+                console.warn('Math rendering error:', error);
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const button = document.getElementById('sendButton');
+            const modelSelect = document.getElementById('modelSelect');
+            const messagesDiv = document.getElementById('messages');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            // Add user message
+            const userMsg = document.createElement('div');
+            userMsg.className = 'message';
+            userMsg.innerHTML = '<div class="user-message">' + escapeHtml(message) + '</div>';
+            messagesDiv.appendChild(userMsg);
+
+            // Clear input and disable button
+            input.value = '';
+            button.disabled = true;
+            if (modelSelect && modelSelect.dataset.disablePermanent !== 'true') {
+                modelSelect.disabled = true;
+            }
+
+            // Create AI message container
+            const aiMsg = document.createElement('div');
+            aiMsg.className = 'message';
+            const aiContent = document.createElement('div');
+            aiContent.className = 'ai-message';
+            aiMsg.appendChild(aiContent);
+            messagesDiv.appendChild(aiMsg);
+
+            // Add waiting indicator
+            const waitingIndicator = document.createElement('div');
+            waitingIndicator.className = 'waiting-indicator';
+            waitingIndicator.innerHTML = '<div class="spinner"></div>Waiting for response...';
+            aiContent.appendChild(waitingIndicator);
+
+            // Reset accumulated content
+            accumulatedContent = '';
+            let firstResponseReceived = false;
+
+            // Scroll to bottom
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            try {
+                const payload = { message: message };
+                const selectedModel = modelSelect && modelSelect.value
+                    ? modelSelect.value
+                    : (modelSelect && modelSelect.dataset.defaultModel
+                        ? modelSelect.dataset.defaultModel
+                        : undefined);
+
+                if (selectedModel) {
+                    payload.model = selectedModel;
+                }
+
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Request failed: ' + response.statusText);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const {done, value} = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '[DONE]') continue;
+
+                            try {
+                                const json = JSON.parse(data);
+                                if (json.content) {
+                                    // Remove waiting indicator on first response
+                                    if (!firstResponseReceived) {
+                                        firstResponseReceived = true;
+                                        waitingIndicator.remove();
+                                    }
+
+                                    accumulatedContent += json.content;
+
+                                    // Process and display content
+                                    aiContent.innerHTML = processContent(accumulatedContent);
+
+                                    // Render math safely
+                                    renderMathSafely(aiContent);
+
+                                    // Scroll to bottom after content update
+                                    requestAnimationFrame(() => {
+                                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                                    });
+                                }
+                                if (json.error) {
+                                    throw new Error(json.error);
+                                }
+                            } catch (e) {
+                                if (e.message && e.message.includes('JSON')) {
+                                    console.log('Skipping non-JSON line:', line);
+                                } else {
+                                    throw e;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                // Remove waiting indicator on error
+                if (waitingIndicator && waitingIndicator.parentNode) {
+                    waitingIndicator.remove();
+                }
+                const aiContent = aiMsg.querySelector('.ai-message');
+                aiContent.innerHTML = '<div class="error-message">Error: ' + escapeHtml(error.message) + '</div>';
+            } finally {
+                button.disabled = false;
+                if (modelSelect) {
+                    const shouldRemainDisabled = modelSelect.dataset.disablePermanent === 'true';
+                    modelSelect.disabled = shouldRemainDisabled;
+                }
+                input.focus();
+
+                // Final scroll to ensure visibility
+                requestAnimationFrame(() => {
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                });
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

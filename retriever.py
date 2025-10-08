@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import tiktoken  # type: ignore
 from openai import OpenAI
+from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
 import chromadb
 from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
@@ -386,14 +387,14 @@ class Retriever:
 
         return "\n\n".join(context_parts), sources
 
-    def build_messages(self, query: str, context: str, use_full_knowledge=False) -> List[Dict[str, str]]:
+    def build_messages(self, query: str, context: str, use_full_knowledge=False) -> List[ChatCompletionSystemMessageParam]:
         system_msg = self.cfg.system_template_full if use_full_knowledge else self.cfg.system_template
         user_msg = self.cfg.user_template.format(query=query, context=context)
-        return [
-            {"role": "system", "content": system_msg},
-            {"role": "user",   "content": user_msg},
+        messages = [
+            ChatCompletionSystemMessageParam(role="system", content=system_msg),
+            ChatCompletionUserMessageParam(role="user", content=user_msg)
         ]
-
+        return messages
 
 def ask_llm(query: str, retriever, model="gpt-4o-mini", use_full_knowledge=False, streaming=False):
     # 1) retrieve + build context

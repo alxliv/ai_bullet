@@ -1,12 +1,20 @@
-dotenv
-openai>=1.0.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# OpenAI API client
+openai>=1.3.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+#
+pydantic>=2.4.0
+jinja2
 chromadb
 tiktoken
 lizard
 pypdf
 python-docx
-unicorn
-jinja2
-fastapi
+
 python-multipart
 requests
+
