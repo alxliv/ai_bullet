@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenAI Math Chat</title>
+    <title>{{ title }}</title>
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
@@ -22,22 +22,27 @@
 </head>
 <body>
     <div class="container">
-        <h1>OpenAI Math Chat</h1>
+        <h1>{{ title }}</h1>
         <div class="version">v. {{ version }}</div>
         <div class="chat-container">
             <div class="messages" id="messages">
                 <div class="message">
                     <div class="ai-message" id="welcome-message">
-                        <p>Hello {{ username }}! I can help you with mathematical questions. I render LaTeX formulas beautifully!</p>
-                        <p><strong>Examples:</strong></p>
-                        <p>1. The quadratic formula is $$x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$$</p>
-                        <p>2. \( \mathcal{L} \) of a function \( f(t) \) defined for \( t \geq 0 \)</p>
-                        <p><strong>Try asking me about:</strong></p>
+                        <p><strong>AI Bullet RAG System</strong> | User: {{ username }}</p>
+                        <p>Retrieval-augmented generation engine for Bullet3 physics library documentation and source code.</p>
+                        <p><strong>Capabilities:</strong></p>
                         <ul>
-                            <li>Calculus concepts and derivatives</li>
-                            <li>Linear algebra and matrices</li>
-                            <li>Statistics and probability</li>
-                            <li>Any mathematical proof or theorem</li>
+                            <li>Query C++ source code structure and implementation details</li>
+                            <li>Search documentation (PDFs, DOCX, Markdown)</li>
+                            <li>Cross-reference code and documentation</li>
+                            <li>Render mathematical formulas with LaTeX, $f(x) = \int_{-\infty}^{\infty} e^{-x^2} dx$, $x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$</li>
+                        </ul>
+                        <p><strong>Example queries:</strong></p>
+                        <ul>
+                            <li>What is the Jacobi solver implementation?</li>
+                            <li>Explain btMotionState class definition</li>
+                            <li>How does collision detection work in Bullet3?</li>
+                            <li>Describe the constraint solver architecture</li>
                         </ul>
                     </div>
                 </div>
@@ -50,8 +55,8 @@
                     </select>
                 </div>
                 <div class="input-group">
-                    <input type="text" id="messageInput" placeholder="Ask a math question...">
-                    <button id="sendButton">Send</button>
+                    <input type="text" id="messageInput" placeholder="Query documentation or source code...">
+                    <button id="sendButton">Execute</button>
                 </div>
             </div>
         </div>

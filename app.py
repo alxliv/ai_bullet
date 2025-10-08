@@ -28,7 +28,8 @@ from retriever import create_retriever, ask_llm
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 import re, random, string, json
 
-version = "0.1.1"
+version = "0.1.2"
+title="AI Bullet: AI-Powered Q & A"
 
 logger = setup_logger()
 # Example usage
@@ -109,9 +110,9 @@ async def lifespan(_app: FastAPI):
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(
-    title="OpenAI Math Chat",
+    title=title,
     description="A web interface for mathematical conversations with AI",
-    version="1.0.0",
+    version=version,
     lifespan=lifespan
 )
 
@@ -157,7 +158,7 @@ app.mount("/src", StaticFiles(directory=SRC_ROOT), name="src")
 app.mount("/examples", StaticFiles(directory=EXAMPLES_ROOT), name="examples")
 
 # _username and _session_id are globals for now, but will be replaced by proper user/session magagement later
-_username = ""
+_username = "demo"
 _session_id = ""
 
 # Session-based message storage - each client gets their own chat history
@@ -271,6 +272,7 @@ async def index(request: Request):
     """Serve the main chat interface"""
     try:
         return templates.TemplateResponse("index.html", {
+            "title": title,
             "request": request,
             "version": version,
             "username": _username
