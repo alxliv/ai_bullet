@@ -4,130 +4,166 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a FastAPI-based OpenAI Math Chat application that provides a web interface for mathematical conversations with AI. The application features LaTeX mathematical expression rendering using KaTeX, streaming responses from OpenAI's API, and a modern, production-ready architecture with proper resource management and security configurations.
+AI Bullet is a Retrieval-Augmented Generation (RAG) chatbot that provides intelligent documentation search and code understanding for software projects. It combines OpenAI's embedding models with ChromaDB for semantic search across PDFs, documentation files, and C++ source code. The Bullet3 physics library serves as the testbed example.
 
 ## Architecture
 
-### Backend (`app.py`)
-- **Modern FastAPI application** with async lifespan management and dependency injection patterns
-- **Streaming chat endpoint** (`/chat`) that proxies requests to OpenAI API using Server-Sent Events
-- **Health check endpoint** (`/health`) for monitoring and deployment
-- **Structured configuration management** with environment-based settings
-- **Production-ready error handling** with proper HTTP status codes and logging
-- **Security-hardened CORS** configuration restricting origins and methods
-- **Resource management** with proper OpenAI client initialization and cleanup
+### Core Components
 
-### Frontend (`web/index.html`)
-- **Single-page application** with vanilla JavaScript and modern UI design
-- **Real-time streaming** chat interface with Server-Sent Events
-- **Enhanced LaTeX rendering** supporting multiple delimiter types:
-  - Standard: `$...$` (inline) and `$$...$$` (display)
-  - LaTeX-style: `\(...\)` (inline) and `\[...\]` (display)
-- **Smart markdown processing** with LaTeX expression protection during parsing
-- **Responsive design** with gradient backgrounds and modern styling
+**app.py** - Main FastAPI application
+- RAG-powered chat interface with retrieval from ChromaDB collections
+- Modern async lifespan management for OpenAI client initialization
+- Session management with per-user chat histories
+- Streaming chat endpoint (`/chat`) using Server-Sent Events (SSE)
+- Automatic chat history saving to `saved_chats/` directory
+- Static file serving for docs (`/docs`), source code (`/src`), and examples (`/examples`)
+- LaTeX rendering support with KaTeX (four delimiter types)
+- Health check and model listing endpoints
 
-### Key Dependencies
-- `fastapi` - Modern web framework with async support
-- `uvicorn` - High-performance ASGI server
-- `openai` - Official OpenAI API client with streaming support
-- `python-dotenv` - Environment variable management
-- `pydantic` - Data validation and serialization
+**retriever.py** - RAG retrieval engine
+- Multi-collection ChromaDB querying with reciprocal rank fusion
+- Optional Maximal Marginal Relevance (MMR) diversification
+- Optional LLM-based re-ranking using GPT models
+- Token-budget aware context building using tiktoken
+- Configurable system/user prompt templates via `RetrieverConfig`
+
+**updatedb_docs.py** - Documentation ingestion script
+- Processes PDFs, DOCX, Markdown, and text files
+- Token-aware chunking with configurable overlap
+- Batch embedding with OpenAI API
+- Stores in ChromaDB collection (typically "bullet_docs")
+
+**updatedb_code.py** - C++ code ingestion script
+- Uses Lizard for C++ parsing (functions, classes, structs)
+- Extracts leading comments for context
+- Chunks oversized functions by token budget
+- Stores in ChromaDB collection (typically "cpp_code")
+
+**config.py** - Central configuration
+- Paths to documentation, source code, and examples
+- ChromaDB directory and embedding model selection
+- Chunk sizes and overlap settings
+- Use `config_win.py` (Windows) or `config_posix.py` (Linux) as templates
+
+### Key Design Patterns
+
+**RAG Pipeline Flow**:
+1. User query → embed with OpenAI
+2. Retrieve from multiple ChromaDB collections (code + docs)
+3. Fuse results using reciprocal rank fusion or score-based fusion
+4. Optional MMR diversification or LLM re-ranking
+5. Build context within token budget
+6. Generate response with OpenAI streaming
+
+**Session Management**:
+- Sessions stored in-memory dict: `{session_id: {"messages": [...], "model": "...", "username": "..."}}`
+- Session IDs: `username_<8-char-random-id>`
+- Automatic cleanup when > 100 sessions (keeps 50 most recent)
+- Chat histories auto-saved to `saved_chats/<session_id>.json`
+
+**Path Translation Issue** (FIXME):
+The codebase has hardcoded paths from original Oracle VPS deployment (`/home/ubuntu/work/...`). These are translated to local paths via `REPLACEMENTS` dict and `RE_ROOTS_PATTERN` regex. This should be fixed in ChromaDB metadata storage rather than runtime translation.
 
 ## Development Commands
 
+### Environment Setup
+```bash
+# Install uv (faster than pip)
+pip install uv
+
+# Create virtual environment
+uv venv
+.venv\Scripts\activate  # Windows
+source .venv/bin/activate  # Linux/macOS
+
+# Install dependencies
+uv pip install -r requirements.txt
+```
+
+### Configuration
+```bash
+# Copy example environment file
+cp .env_example .env
+
+# Edit .env with your settings:
+# - OPENAI_API_KEY: Your OpenAI API key
+# - USERS_DB: username:password pairs (e.g., admin:12345,user01:demo)
+# - ANONYMIZED_TELEMETRY: False
+# - CHROMA_TELEMETRY: False
+
+# Configure paths in config.py
+# Set DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH to your data directories
+# Use config_win.py or config_posix.py as template
+```
+
+### Database Population
+```bash
+# Process documentation files (PDFs, DOCX, Markdown, text)
+python updatedb_docs.py
+
+# Process C++ source code
+python updatedb_code.py
+
+# Test retrieval standalone
+python retriever.py "How do I create a rigid body in Bullet3?"
+```
+
 ### Running the Application
 ```bash
-# Start the development server (recommended)
+# Main application (recommended)
 python app.py
 
 # Alternative using uvicorn directly
 uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
-# For debugging in VS Code
+# For debugging with VS Code
 # Use the "Debug FastAPI" configuration in .vscode/launch.json
-```
-
-### Environment Setup
-```bash
-# Create virtual environment
-python -m venv .venv
-
-# Activate virtual environment (Windows)
-.venv\Scripts\activate
-
-# Install dependencies
-pip install fastapi uvicorn openai python-dotenv
-```
-
-### Configuration
-- Create `.env` file with `OPENAI_API_KEY=your_api_key_here`
-- Optional: Set `HOST` and `PORT` environment variables
-- The application will run without API key but with limited functionality
-
-## File Structure
-```
-app.py              # Main FastAPI application (refactored)
-web/                # Frontend assets
-  index.html        # Single-page chat interface (enhanced)
-.vscode/            # VS Code development configuration
-  launch.json       # Debug configurations for FastAPI
-.env                # Environment variables (API keys)
-.gitignore          # Git ignore patterns
-CLAUDE.md           # This documentation file
 ```
 
 ## API Endpoints
 
-- `GET /` - Serves the main chat interface
-- `POST /chat` - Streaming chat endpoint accepting `{"message": "...", "model": "gpt-4o-mini"}`
-- `GET /health` - Health check endpoint returning service status and configuration
-
-## Frontend Integration Notes
-
-The JavaScript frontend features:
-- **Enhanced LaTeX processing** supporting four delimiter types before markdown parsing
-- **Placeholder-based protection** preventing markdown conflicts with math expressions
-- **Real-time streaming** with accumulative content display and smooth rendering
-- **Automatic KaTeX rendering** after each content update with error tolerance
-- **Modern UI/UX** with animations, gradients, and responsive design
-- **Robust error handling** for network issues and malformed responses
-
-## Recent Updates (Updated: 2025-09-22)
-
-### Major Refactoring (Latest)
-- **Architecture overhaul**: Implemented modern FastAPI patterns with async lifespan management
-- **Security hardening**: Restricted CORS to localhost origins and specific HTTP methods
-- **Resource management**: Added proper OpenAI client initialization and cleanup
-- **Enhanced logging**: Unified logging format with uvicorn-style colored output
-- **Production readiness**: Added health checks, structured error responses, and configuration management
-
-### LaTeX Rendering Improvements
-- **Multi-delimiter support**: Added support for `\(...\)` and `\[...\]` LaTeX delimiters
-- **Enhanced processing**: Fixed math expression parsing conflicts with markdown
-- **Pattern matching**: Improved regex patterns for reliable LaTeX expression detection
-- **Display fixes**: Resolved rendering issues with complex mathematical notation
-
-### Development Experience
-- **VS Code integration**: Added debug configurations for FastAPI development
-- **Better error messages**: Enhanced startup feedback and error reporting
-- **Documentation**: Comprehensive project documentation and setup instructions
+- `GET /` - Main chat interface with RAG-powered responses
+- `POST /chat` - Streaming chat endpoint (JSON: `{"message": "...", "model": "..."}`)
+- `GET /health` - Health check with OpenAI configuration status
+- `GET /models` - List available OpenAI models
+- Static mounts: `/docs`, `/src`, `/examples` - Serve documentation and source files
 
 ## Important Development Notes
 
-### Code Patterns
-- Use dependency injection patterns instead of global state when possible
-- Follow async/await patterns throughout the application
-- Implement proper error handling with structured responses
-- Use Pydantic models for all API request/response validation
+### Retriever Configuration
+The `RetrieverConfig` class in `retriever.py` controls RAG behavior:
+- `use_mmr`: Enable Maximal Marginal Relevance (default: True)
+- `use_llm_rerank`: Use LLM for re-ranking instead of MMR (default: False)
+- `max_context_tokens`: Token budget for context (default: 6000)
+- `max_snippets`: Maximum number of snippets to include (default: 12)
+- `system_template` vs `system_template_full`: Context-only vs full-knowledge prompts
+
+### Model Selection
+- GPT-5 models use `max_completion_tokens` parameter
+- Other models use `max_tokens` parameter
+- Temperature set to 1 for `-mini` and `-nano` models, 0 otherwise
+- O1 models filter out system messages before sending to API
+
+### LaTeX Rendering
+The frontend supports four delimiter types:
+- `$...$` and `$$...$$` (standard)
+- `\(...\)` and `\[...\]` (LaTeX-style)
+
+Math expressions are protected with placeholders before markdown parsing to avoid conflicts.
 
 ### Security Considerations
-- CORS is restricted to localhost - update for production deployment
-- API keys are loaded from environment variables only
-- All user input is validated through Pydantic models
-- Error responses don't expose internal implementation details
+- CORS configured for localhost origins only (restrict to specific origins for production)
+- API keys loaded from environment variables only
+- Session cleanup prevents memory exhaustion (keeps 50 most recent when > 100 sessions)
+- All user input validated through Pydantic models
 
-### Testing Strategy
-- Unit tests should mock the OpenAI client using dependency injection
-- Integration tests can use the health check endpoint
-- Frontend tests should verify LaTeX rendering with various delimiter types
-- Load testing should focus on the streaming chat endpoint
+### Testing and Debugging
+- Use `retriever.py` standalone to test retrieval without web interface
+- Check `saved_chats/` directory for conversation logs
+- Enable uvicorn logging with `--log-level debug`
+- Test LaTeX rendering with questions involving mathematical formulas
+
+### Known Issues
+1. **Path hardcoding**: ChromaDB contains hardcoded `/home/ubuntu/work/...` paths from VPS deployment. Should be fixed in database metadata, not runtime translation.
+2. **Session storage**: In-memory sessions lost on restart. Consider persistent storage for production.
+3. **Source score filtering**: Minimum relevance thresholds (0.25 and 0.08) may need tuning for different datasets.
