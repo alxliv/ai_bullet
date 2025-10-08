@@ -7,8 +7,8 @@ with AI, featuring LaTeX rendering and streaming responses.
 
 Required packages: pip install fastapi uvicorn openai python-dotenv
 """
-
 import os
+import time
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
@@ -24,7 +24,7 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
 from dotenv import load_dotenv
 from my_logger import setup_logger;
-from retriever import create_retriever, ask_llm
+from retriever import create_retriever
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
 import re, random, string, json
 
@@ -33,11 +33,11 @@ title="AI Bullet: AI-Powered Q & A"
 
 logger = setup_logger()
 # Example usage
-logger.debug("Debugging message")
-logger.info("Information message")
-logger.warning("Warning message")
-logger.error("Error message")
-logger.critical("Critical error!")
+# logger.debug("Debugging message")
+# logger.info("Information message")
+# logger.warning("Warning message")
+# logger.error("Error message")
+# logger.critical("Critical error!")
 
 load_dotenv()
 
@@ -310,6 +310,8 @@ async def stream_openai_response(message: str, model: str) -> AsyncGenerator[str
 
         stream = await client.chat.completions.create(**stream_params)
 
+        logger.info("Response stream opened.")
+        start_time = time.perf_counter()
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 content = chunk.choices[0].delta.content
@@ -318,7 +320,8 @@ async def stream_openai_response(message: str, model: str) -> AsyncGenerator[str
                 yield f"data: {response.model_dump_json()}\n\n"
 
         yield "data: [DONE]\n\n"
-        logger.info("Response streaming completed successfully")
+        elapsed_sec = (time.perf_counter() - start_time) * 1000 * 1000
+        logger.info(f"Response streaming completed successfully in {elapsed_sec:.2f} sec")
 
     except Exception as e:
         logger.error(f"OpenAI API error: {e}")

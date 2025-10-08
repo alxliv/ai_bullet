@@ -41,6 +41,7 @@ from __future__ import annotations
 import os
 import json
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import tiktoken  # type: ignore
@@ -235,13 +236,13 @@ class Retriever:
         self.collections = dict(collections)
         self.cfg = config or RetrieverConfig()
         self.oa = openai_client or OpenAI()
-        try:
-            resp = self.oa.models.list()
-            print("Available models:")
-            for m in resp.data:
-                print(f"{m.id}")
-        except Exception as e:
-            print(f"Error fetching models from OpenAI: {e}")
+        # try:
+        #     resp = self.oa.models.list()
+        #     print("Available models:")
+        #     for m in resp.data:
+        #         print(f"{m.id}")
+        # except Exception as e:
+        #     print(f"Error fetching models from OpenAI: {e}")
 
     # --------- Embedding ---------
     def embed_query(self, query: str) -> List[float]:
@@ -299,9 +300,10 @@ class Retriever:
             fused = self.llm_rerank(query, fused, top_n=self.cfg.max_snippets)
             print("rerank received.")
         elif self.cfg.use_mmr:
-            print("asking use mmr_select()")
+            start_time = time.perf_counter()
             fused = mmr_select(fused, k=self.cfg.max_snippets, lambda_relevance=self.cfg.mmr_lambda)
-            print("mmr_select() done.")
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            print(f"mmr_select() done in {elapsed_ms:.2f} ms")
         return fused
 
     # --------- Context / Prompt building ---------
