@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from path_utils import encode_path
 
 from openai import OpenAI
 import tiktoken
@@ -86,7 +87,7 @@ def build_leftover_chunks(lines, used_spans, file_path):
                 "id": cid,
                 "text": text,
                 "metadata": {
-                    "file_path": file_path,
+                    "file_path": encode_path(file_path),
                     "start_line": i,
                     "end_line": j-1,
                     "node_type": "leftover_block"
@@ -122,7 +123,7 @@ def extract_chunks_with_lizard(path, include_comments=True):
             "id": cid,
             "text": text,
             "metadata": {
-                "file_path": path,
+                "file_path": encode_path(path),
                 "start_line": sl,
                 "end_line": el,
                 "name": fn.name,

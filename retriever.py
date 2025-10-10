@@ -51,6 +51,7 @@ import chromadb
 from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from path_utils import decode_path
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
@@ -134,6 +135,8 @@ class Hit:
 
     def source_label(self) -> str:
         fp = self.metadata.get("file_path") or self.metadata.get("source") or self.id
+        # Decode path from variable format to absolute path
+        fp = decode_path(fp)
         page = self.metadata.get("page_number")
         start = self.metadata.get("start_line")
         end = self.metadata.get("end_line")
@@ -187,8 +190,8 @@ def _guess_block_language(hit: Hit, cfg: RetrieverConfig) -> str:
     meta = hit.metadata
     node_type = meta.get(cfg.code_lang_key)
     if node_type in cfg.code_lang_values:
-        # infer from extension
-        path = meta.get("file_path") or ""
+        # infer from extension (decode path first to get proper extension)
+        path = decode_path(meta.get("file_path") or "")
         ext = os.path.splitext(path)[1].lower()
         if ext in (".c", ".h"): return "c"
         return cfg.default_code_lang

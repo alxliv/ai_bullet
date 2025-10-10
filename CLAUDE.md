@@ -61,8 +61,13 @@ AI Bullet is a Retrieval-Augmented Generation (RAG) chatbot that provides intell
 - Automatic cleanup when > 100 sessions (keeps 50 most recent)
 - Chat histories auto-saved to `saved_chats/<session_id>.json`
 
-**Path Translation Issue** (FIXME):
-The codebase has hardcoded paths from original Oracle VPS deployment (`/home/ubuntu/work/...`). These are translated to local paths via `REPLACEMENTS` dict and `RE_ROOTS_PATTERN` regex. This should be fixed in ChromaDB metadata storage rather than runtime translation.
+**OS-Agnostic Path System**:
+File paths in ChromaDB use variable-based encoding for cross-platform compatibility:
+- `$DOCS$/subfolder/file.pdf` - Documentation files
+- `$SRC$/path/to/code.cpp` - Source code files
+- `$EXAMPLES$/example/main.cpp` - Example files
+
+This allows the same database to work on Windows, Linux, and macOS with different absolute paths. See `path_utils.py` for encoding/decoding logic.
 
 ## Development Commands
 
@@ -104,6 +109,10 @@ python updatedb_docs.py
 # Process C++ source code
 python updatedb_code.py
 
+# Migrate existing database to OS-agnostic path encoding (if needed)
+python migrate_paths.py --dry-run  # Preview changes
+python migrate_paths.py            # Apply migration
+
 # Test retrieval standalone
 python retriever.py "How do I create a rigid body in Bullet3?"
 ```
@@ -129,6 +138,16 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 - Static mounts: `/docs`, `/src`, `/examples` - Serve documentation and source files
 
 ## Important Development Notes
+
+### Path Management System
+The codebase uses an OS-agnostic path encoding system (`path_utils.py`):
+- **Encoding**: Absolute paths → variable-based paths (e.g., `D:/Work/docs/file.pdf` → `$DOCS$/file.pdf`)
+- **Decoding**: Variable-based paths → absolute paths for current OS
+- **Variables**: `$DOCS$`, `$SRC$`, `$EXAMPLES$` map to paths in `config.py`
+- **Storage**: All paths in ChromaDB metadata use encoded format
+- **Migration**: Use `migrate_paths.py` to convert existing databases
+
+This enables database portability across Windows, Linux, and macOS systems.
 
 ### Retriever Configuration
 The `RetrieverConfig` class in `retriever.py` controls RAG behavior:
@@ -164,6 +183,6 @@ Math expressions are protected with placeholders before markdown parsing to avoi
 - Test LaTeX rendering with questions involving mathematical formulas
 
 ### Known Issues
-1. **Path hardcoding**: ChromaDB contains hardcoded `/home/ubuntu/work/...` paths from VPS deployment. Should be fixed in database metadata, not runtime translation.
-2. **Session storage**: In-memory sessions lost on restart. Consider persistent storage for production.
-3. **Source score filtering**: Minimum relevance thresholds (0.25 and 0.08) may need tuning for different datasets.
+1. **Session storage**: In-memory sessions lost on restart. Consider persistent storage for production.
+2. **Source score filtering**: Minimum relevance thresholds (0.25 and 0.08) may need tuning for different datasets.
+3. **Legacy databases**: If migrating from old VPS-based database, run `migrate_paths.py` to convert hardcoded paths to variable-based encoding.

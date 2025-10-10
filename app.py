@@ -25,8 +25,8 @@ from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUs
 from dotenv import load_dotenv
 from my_logger import setup_logger;
 from retriever import create_retriever
-from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
-import re, random, string, json
+from path_utils import DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
+import random, string, json
 
 version = "0.1.2"
 title="AI Bullet: AI-Powered Q & A"
@@ -125,30 +125,9 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],  # Restrict headers
 )
 
-DOCS_ROOT = os.path.expanduser(DOCUMENTS_PATH)
-SRC_ROOT = os.path.expanduser(SOURCES_PATH)
-EXAMPLES_ROOT = os.path.expanduser(EXAMPLES_PATH)
-
-# FIXME!!! should fix how path are stored in ChromaDB (I use chromadb that was created on Oracle VPS, so there is /home/ubuntu/work...)
-# Should fix the way location of data is stored in CHROMADB!!!
-print("Remember to fix how data references are stored in DB!")
-
-DOCS_ROOT_REF = "/home/ubuntu/work/rag_data/bullet3/docs" # os.path.expanduser(DOCUMENTS_PATH)
-SRC_ROOT_REF = "/home/ubuntu/work/rag_data/bullet3/src"  # os.path.expanduser(SOURCES_PATH)
-EXAMPLES_ROOT_REF = "/home/ubuntu/work/rag_data/bullet3/examples" # os.path.expanduser(EXAMPLES_PATH)
-
-REPLACEMENTS = {}
-for root, alias in (
-    (DOCS_ROOT_REF,    "/docs"),
-    (SRC_ROOT_REF,     "/src"),
-    (EXAMPLES_ROOT_REF, "/examples"),
-):
-    # map both the absolute path and the same string without leading slash
-    REPLACEMENTS[root] = alias
-    REPLACEMENTS[root.lstrip(os.sep)] = alias
-
-# compile a single pattern matching any of those keys
-RE_ROOTS_PATTERN = re.compile("|".join(re.escape(k) for k in REPLACEMENTS))
+# Path roots are now imported from path_utils (DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT)
+# Paths in ChromaDB are now stored using OS-agnostic variable encoding ($DOCS$, $SRC$, $EXAMPLES$)
+# and decoded at runtime using path_utils.decode_path()
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="web"), name="static")

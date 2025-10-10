@@ -31,6 +31,7 @@ import docx
 from typing import List, Dict, Any, Iterable, Tuple, Optional
 from config import DOCUMENTS_PATH, SOURCES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
 from dotenv import load_dotenv
+from path_utils import encode_path
 
 # ------------- Third-party deps -------------
 import chromadb
@@ -117,7 +118,7 @@ def chunk_text_generic(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS, 
                 "id": cid,
                 "text": piece,
                 "metadata": {
-                    "file_path": path,
+                    "file_path": encode_path(path),
                     "start_char": i,
                     "end_char": i + len(piece),
                     "source_type": "doc",
@@ -135,7 +136,7 @@ def chunk_text_generic(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS, 
             "id": cid,
             "text": piece,
             "metadata": {
-                "file_path": path,
+                "file_path": encode_path(path),
                 "start_token": i,
                 "end_token": i + len(piece_toks),
                 "source_type": "doc",
@@ -157,7 +158,7 @@ def chunk_markdown(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS) -> I
                 "id": cid,
                 "text": piece,
                 "metadata": {
-                    "file_path": path,
+                    "file_path": encode_path(path),
                     "block_index": idx,
                     "piece_index": j,
                     "source_type": "doc",
@@ -189,7 +190,7 @@ def chunk_pdf_pages(
                 "id": cid,
                 "text": text,
                 "metadata": {
-                    "file_path": path,
+                    "file_path": encode_path(path),
                     "source_type": "doc",
                     "format": "pdf",
                     "page_number": page_no,
