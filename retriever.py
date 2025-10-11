@@ -93,9 +93,8 @@ class RetrieverConfig:
         ),
         user_template: str = (
             "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
-            "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file_name](path_to_the_file) : page,line-range).\n"
-            "Example: [btMotionState.h](/src/LinearMath/btMotionState.h) NOT [/src/LinearMath/btMotionState.h](btMotionState.h)\n"
-            "NEVER utilize external links like https://github.com/bulletphysics"
+            "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](full path to the file) : page,line-range).\n"
+            "Example: [btMotionState.h](/src/LinearMath/btMotionState.h).\n"
         ),
         use_llm_rerank: bool = False,
         llm_rerank_model: str = "gpt-3.5-turbo",

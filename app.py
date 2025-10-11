@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from my_logger import setup_logger;
 from retriever import create_retriever
 from path_utils import DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
-import random, string, json
+import random, string, json, re
 
 version = "0.1.2"
 title="AI Bullet: AI-Powered Q & A"
@@ -199,6 +199,56 @@ def save_chat_history(session_id):
         logger.error(f"Error saving chat: {e}")
         return None
 
+
+def normalize_repo_links(markdown_text: str) -> str:
+    """Ensure markdown links display the same repo-relative path as their destination."""
+
+    def _replace(match: re.Match) -> str:
+        text = match.group(1)
+        url = match.group(2)
+
+        if text.strip() == url.strip():
+            return match.group(0)
+
+        if url.startswith("/"):
+            return f"[{url}]({url})"
+
+        return match.group(0)
+
+    return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _replace, markdown_text)
+
+
+def save_response(session_id: str, model: str, user_message: str, assistant_message: str) -> None:
+    """Persist a completed user/assistant exchange to disk."""
+    session_data = user_sessions.get(session_id)
+
+    if not session_data:
+        logger.warning(f"Cannot save response; session {session_id} not found")
+        return
+
+    session_messages = session_data["messages"]
+
+    if session_messages and session_messages[-1].get("role") == "user":
+        # Ensure latest user message is up to date before saving
+        session_messages[-1]["content"] = user_message
+    else:
+        session_messages.append({"role": "user", "content": user_message})
+
+    session_messages.append({
+        "role": "assistant",
+        "model": model,
+        "content": assistant_message
+    })
+
+    session_data["model"] = model
+
+    saved_path = save_chat_history(session_id)
+
+    if saved_path:
+        logger.info(f"Saved chat history to {saved_path}")
+    else:
+        logger.warning(f"Failed to persist chat history for session {session_id}")
+
 class ChatRequest(BaseModel):
     """Request model for chat endpoint"""
     message: str = Field(..., min_length=1, description="The user's message")
@@ -268,7 +318,7 @@ async def index(request: Request):
             detail="Failed to load frontend"
         )
 
-def complete_response(combined_content: str, model: str, message: str):
+def complete_response(combined_content: str, model: str, message: str, session_id: Optional[str] = None):
     """
     Called when the complete response has been received and accumulated.
     This function receives the full combined content from all chunks.
@@ -286,6 +336,16 @@ def complete_response(combined_content: str, model: str, message: str):
     logger.debug(f"Original query: {message[:100]}...")  # First 100 chars of query
     logger.debug(f"Response preview: {combined_content[:200]}...")  # First 200 chars of response
 
+    normalized_content = normalize_repo_links(combined_content)
+
+    if session_id:
+        save_response(session_id, model, message, normalized_content)
+    else:
+        logger.warning("Session ID missing; skipping chat persistence")
+        logger.debug("Normalized content preview: %s", normalized_content[:200])
+
+    return normalized_content
+
     # You can add any post-processing here:
     # - Store complete response in database
     # - Perform analytics on the full response
@@ -297,7 +357,7 @@ def complete_response(combined_content: str, model: str, message: str):
     # is now done in retriever.py at source_label() generation time,
     # so the LLM receives proper web URLs from the start
 
-async def stream_openai_response(message: str, model: str, use_full_knowledge: bool = False) -> AsyncGenerator[str, None]:
+async def stream_openai_response(message: str, model: str, use_full_knowledge: bool = False, session_id: Optional[str] = None) -> AsyncGenerator[str, None]:
     """Stream responses from OpenAI API using Server-Sent Events format"""
     client = get_openai_client()
 
@@ -343,7 +403,7 @@ async def stream_openai_response(message: str, model: str, use_full_knowledge: b
         # Call complete_response with the accumulated content
         # This can be used for logging, analytics, storage, etc.
         if combined_content:
-            complete_response(combined_content, model, message)
+            complete_response(combined_content, model, message, session_id=session_id)
 
         yield "data: [DONE]\n\n"
         elapsed_sec = time.perf_counter() - start_time
@@ -383,7 +443,12 @@ async def chat(request: ChatRequest):
     logger.info(f"Chat request: model={request.model}, message_length={len(request.message)}, use_full_knowledge={request.use_full_knowledge}")
 
     return StreamingResponse(
-        stream_openai_response(request.message, request.model, request.use_full_knowledge),
+        stream_openai_response(
+            request.message,
+            request.model,
+            request.use_full_knowledge,
+            session_id=session_id
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
