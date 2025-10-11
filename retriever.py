@@ -51,7 +51,6 @@ import chromadb
 from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
-from path_utils import decode_path
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
@@ -94,7 +93,9 @@ class RetrieverConfig:
         ),
         user_template: str = (
             "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
-            "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](path) : page,line-range)."
+            "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file_name](path_to_the_file) : page,line-range).\n"
+            "Example: [btMotionState.h](/src/LinearMath/btMotionState.h) NOT [/src/LinearMath/btMotionState.h](btMotionState.h)\n"
+            "NEVER utilize external links like https://github.com/bulletphysics"
         ),
         use_llm_rerank: bool = False,
         llm_rerank_model: str = "gpt-3.5-turbo",
@@ -135,8 +136,27 @@ class Hit:
 
     def source_label(self) -> str:
         fp = self.metadata.get("file_path") or self.metadata.get("source") or self.id
-        # Decode path from variable format to absolute path
-        fp = decode_path(fp)
+
+        # Convert portable path format to web URL relative to static mount points
+        # {DOCS}/file.pdf -> /docs/file.pdf
+        # {SRC}/path/code.cpp -> /src/path/code.cpp
+        # {EXAMPLES}/demo/main.cpp -> /examples/demo/main.cpp
+        # Also support legacy $VAR$ format
+
+        if isinstance(fp, str):
+            if fp.startswith('{DOCS}/'):
+                fp = '/docs/' + fp[7:]  # Remove {DOCS}/
+            elif fp.startswith('{SRC}/'):
+                fp = '/src/' + fp[6:]   # Remove {SRC}/
+            elif fp.startswith('{EXAMPLES}/'):
+                fp = '/examples/' + fp[11:]  # Remove {EXAMPLES}/
+            elif fp.startswith('$DOCS$/'):
+                fp = '/docs/' + fp[7:]  # Remove $DOCS$/
+            elif fp.startswith('$SRC$/'):
+                fp = '/src/' + fp[6:]   # Remove $SRC$/
+            elif fp.startswith('$EXAMPLES$/'):
+                fp = '/examples/' + fp[11:]  # Remove $EXAMPLES$/
+
         page = self.metadata.get("page_number")
         start = self.metadata.get("start_line")
         end = self.metadata.get("end_line")
@@ -190,8 +210,8 @@ def _guess_block_language(hit: Hit, cfg: RetrieverConfig) -> str:
     meta = hit.metadata
     node_type = meta.get(cfg.code_lang_key)
     if node_type in cfg.code_lang_values:
-        # infer from extension (decode path first to get proper extension)
-        path = decode_path(meta.get("file_path") or "")
+        # infer from extension (path is in variable format like {SRC}/file.cpp)
+        path = meta.get("file_path") or ""
         ext = os.path.splitext(path)[1].lower()
         if ext in (".c", ".h"): return "c"
         return cfg.default_code_lang

@@ -63,11 +63,11 @@ AI Bullet is a Retrieval-Augmented Generation (RAG) chatbot that provides intell
 
 **OS-Agnostic Path System**:
 File paths in ChromaDB use variable-based encoding for cross-platform compatibility:
-- `$DOCS$/subfolder/file.pdf` - Documentation files
-- `$SRC$/path/to/code.cpp` - Source code files
-- `$EXAMPLES$/example/main.cpp` - Example files
+- `{DOCS}/subfolder/file.pdf` - Documentation files
+- `{SRC}/path/to/code.cpp` - Source code files
+- `{EXAMPLES}/example/main.cpp` - Example files
 
-This allows the same database to work on Windows, Linux, and macOS with different absolute paths. See `path_utils.py` for encoding/decoding logic.
+The curly brace format `{VAR}` is used to avoid collisions with LaTeX math notation (`$...$`) commonly found in technical documentation. Legacy `$VAR$` format is still supported for backward compatibility. See `path_utils.py` for encoding/decoding logic and `PATH_SYSTEM.md` for detailed documentation.
 
 ## Development Commands
 

@@ -4,21 +4,21 @@ path_utils.py
 OS-agnostic path encoding/decoding utilities for ChromaDB storage.
 
 This module provides functions to:
-1. Encode absolute file paths to portable variable-based paths (e.g., $DOCS$/subfolder/file.pdf)
+1. Encode absolute file paths to portable variable-based paths (e.g., {DOCS}/subfolder/file.pdf)
 2. Decode variable-based paths back to absolute paths based on current OS configuration
 
 Supported variables:
-- $DOCS$ - Documentation root directory
-- $SRC$ - Source code root directory
-- $EXAMPLES$ - Examples root directory
+- {DOCS} - Documentation root directory
+- {SRC} - Source code root directory
+- {EXAMPLES} - Examples root directory
 
 Example:
     # Encoding (when storing to DB)
     abs_path = "D:/Work22/bullet3/docs/manual.pdf"
-    encoded = encode_path(abs_path)  # Returns "$DOCS$/manual.pdf"
+    encoded = encode_path(abs_path)  # Returns "{DOCS}/manual.pdf"
 
     # Decoding (when retrieving from DB)
-    encoded = "$DOCS$/manual.pdf"
+    encoded = "{DOCS}/manual.pdf"
     abs_path = decode_path(encoded)  # Returns "D:/Work22/bullet3/docs/manual.pdf" on Windows
 """
 
@@ -34,16 +34,23 @@ EXAMPLES_ROOT = os.path.normpath(os.path.expanduser(EXAMPLES_PATH))
 
 # Path variable mapping for encoding (absolute -> variable)
 PATH_VARIABLES = {
-    DOCS_ROOT: "$DOCS$",
-    SRC_ROOT: "$SRC$",
-    EXAMPLES_ROOT: "$EXAMPLES$",
+    DOCS_ROOT: "{DOCS}",
+    SRC_ROOT: "{SRC}",
+    EXAMPLES_ROOT: "{EXAMPLES}",
 }
 
 # Reverse mapping for decoding (variable -> absolute)
 VARIABLE_TO_PATH = {
-    "$DOCS$": DOCS_ROOT,
-    "$SRC$": SRC_ROOT,
-    "$EXAMPLES$": EXAMPLES_ROOT,
+    "{DOCS}": DOCS_ROOT,
+    "{SRC}": SRC_ROOT,
+    "{EXAMPLES}": EXAMPLES_ROOT,
+}
+
+# Legacy path variables (for migration support)
+LEGACY_VARIABLES = {
+    "$DOCS$": "{DOCS}",
+    "$SRC$": "{SRC}",
+    "$EXAMPLES$": "{EXAMPLES}",
 }
 
 
@@ -55,7 +62,7 @@ def encode_path(absolute_path: str) -> str:
         absolute_path: Absolute file path (e.g., "D:/Work22/bullet3/docs/manual.pdf")
 
     Returns:
-        Encoded path with variable prefix (e.g., "$DOCS$/manual.pdf")
+        Encoded path with variable prefix (e.g., "{DOCS}/manual.pdf")
         If path doesn't match any known root, returns the original path unchanged.
 
     Note:
@@ -92,13 +99,16 @@ def decode_path(encoded_path: str) -> str:
     Convert a variable-based path back to an absolute file path for the current OS.
 
     Args:
-        encoded_path: Encoded path with variable prefix (e.g., "$DOCS$/manual.pdf")
+        encoded_path: Encoded path with variable prefix (e.g., "{DOCS}/manual.pdf")
 
     Returns:
         Absolute file path for current OS (e.g., "D:/Work22/bullet3/docs/manual.pdf")
         If no variable prefix found, returns the original path unchanged.
+
+    Note:
+        Also supports legacy $VAR$ format for backward compatibility.
     """
-    # Check if path starts with any known variable
+    # Check if path starts with any known variable (current format)
     for variable, root in VARIABLE_TO_PATH.items():
         if encoded_path.startswith(variable + "/"):
             # Extract relative part (after variable and /)
@@ -106,6 +116,17 @@ def decode_path(encoded_path: str) -> str:
             # Convert to OS-specific path separator
             rel_path = rel_part.replace('/', os.sep)
             # Join with root
+            return os.path.join(root, rel_path)
+
+    # Check for legacy $VAR$ format
+    for legacy_var, new_var in LEGACY_VARIABLES.items():
+        if encoded_path.startswith(legacy_var + "/"):
+            # Extract relative part
+            rel_part = encoded_path[len(legacy_var) + 1:]
+            # Convert to OS-specific path separator
+            rel_path = rel_part.replace('/', os.sep)
+            # Get the root from the new variable
+            root = VARIABLE_TO_PATH[new_var]
             return os.path.join(root, rel_path)
 
     # No variable found - return as-is
@@ -120,9 +141,14 @@ def is_encoded_path(path: str) -> bool:
         path: Path string to check
 
     Returns:
-        True if path starts with a known variable ($DOCS$, $SRC$, $EXAMPLES$)
+        True if path starts with a known variable ({DOCS}, {SRC}, {EXAMPLES})
+        or legacy format ($DOCS$, $SRC$, $EXAMPLES$)
     """
-    return any(path.startswith(var + "/") for var in VARIABLE_TO_PATH.keys())
+    # Check current format
+    if any(path.startswith(var + "/") for var in VARIABLE_TO_PATH.keys()):
+        return True
+    # Check legacy format
+    return any(path.startswith(var + "/") for var in LEGACY_VARIABLES.keys())
 
 
 def get_path_variable(absolute_path: str) -> Optional[str]:
@@ -133,7 +159,7 @@ def get_path_variable(absolute_path: str) -> Optional[str]:
         absolute_path: Absolute file path
 
     Returns:
-        Path variable (e.g., "$DOCS$") or None if no match
+        Path variable (e.g., "{DOCS}") or None if no match
     """
     norm_path = os.path.normpath(absolute_path)
 
@@ -148,6 +174,54 @@ def get_path_variable(absolute_path: str) -> Optional[str]:
             continue
 
     return None
+
+
+def path_to_web_url(absolute_path: str) -> str:
+    """
+    Convert an absolute file path to a web-accessible URL path.
+
+    Args:
+        absolute_path: Absolute file path (e.g., "D:/Work22/bullet3/docs/manual.pdf")
+
+    Returns:
+        Web URL path (e.g., "/docs/manual.pdf")
+        If path doesn't match any known root, returns the original path unchanged.
+
+    Example:
+        >>> path_to_web_url("D:/Work22/bullet3/docs/Bullet_User_Manual.pdf")
+        "/docs/Bullet_User_Manual.pdf"
+        >>> path_to_web_url("D:/Work22/bullet3/src/BulletDynamics/Dynamics/btRigidBody.cpp")
+        "/src/BulletDynamics/Dynamics/btRigidBody.cpp"
+    """
+    # Normalize the input path
+    norm_path = os.path.normpath(absolute_path)
+
+    # Mapping from root paths to web mount points
+    web_mounts = {
+        DOCS_ROOT: "/docs",
+        SRC_ROOT: "/src",
+        EXAMPLES_ROOT: "/examples",
+    }
+
+    # Try to match against known roots (longest match first)
+    sorted_roots = sorted(web_mounts.items(), key=lambda x: len(x[0]), reverse=True)
+
+    for root, mount_point in sorted_roots:
+        # Check if path starts with this root
+        try:
+            common = os.path.commonpath([norm_path, root])
+            if os.path.normpath(common) == os.path.normpath(root):
+                # Extract relative part
+                rel_path = os.path.relpath(norm_path, root)
+                # Convert to forward slashes for URL (POSIX-style)
+                posix_rel = rel_path.replace(os.sep, '/')
+                return f"{mount_point}/{posix_rel}"
+        except ValueError:
+            # Paths are on different drives (Windows) - skip
+            continue
+
+    # No match found - return original path
+    return absolute_path
 
 
 # Convenience function for migration scripts

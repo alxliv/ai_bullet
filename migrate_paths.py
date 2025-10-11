@@ -6,7 +6,9 @@ Migrate existing ChromaDB collections to use OS-agnostic path encoding.
 
 This script updates all file_path metadata in existing ChromaDB collections
 from absolute paths (or old hardcoded paths) to the new variable-based encoding
-($DOCS$, $SRC$, $EXAMPLES$).
+({DOCS}, {SRC}, {EXAMPLES}).
+
+Also migrates legacy $VAR$ format to new {VAR} format.
 
 Usage:
     python migrate_paths.py [--dry-run] [--collection COLLECTION_NAME]
@@ -20,7 +22,7 @@ import os
 import argparse
 import chromadb
 from config import CHROMA_DB_DIR
-from path_utils import encode_path, is_encoded_path, DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
+from path_utils import encode_path, is_encoded_path, DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT, LEGACY_VARIABLES
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
@@ -30,6 +32,15 @@ OLD_PATHS_MAP = {
     "/home/ubuntu/work/rag_data/bullet3/src": SRC_ROOT,
     "/home/ubuntu/work/rag_data/bullet3/examples": EXAMPLES_ROOT,
 }
+
+
+def migrate_legacy_variable_format(path: str) -> str:
+    """Convert legacy $VAR$ format to new {VAR} format."""
+    for legacy_var, new_var in LEGACY_VARIABLES.items():
+        if path.startswith(legacy_var + "/"):
+            # Replace legacy variable with new format
+            return new_var + path[len(legacy_var):]
+    return path
 
 
 def normalize_old_path(old_path: str) -> str:
@@ -63,6 +74,7 @@ def migrate_collection(collection, dry_run=False):
     total_migrated = 0
     total_already_encoded = 0
     total_unchanged = 0
+    total_legacy_migrated = 0
 
     while offset < total:
         limit = min(BATCH_SIZE, total - offset)
@@ -82,7 +94,24 @@ def migrate_collection(collection, dry_run=False):
 
             old_path = metadata["file_path"]
 
-            # Check if already encoded
+            # Check if it's in legacy $VAR$ format
+            migrated_legacy = migrate_legacy_variable_format(old_path)
+            if migrated_legacy != old_path:
+                print(f"\n  Document: {doc_id}")
+                print(f"    Old (legacy): {old_path}")
+                print(f"    New:          {migrated_legacy}")
+
+                if not dry_run:
+                    metadata["file_path"] = migrated_legacy
+                    collection.update(
+                        ids=[doc_id],
+                        metadatas=[metadata]
+                    )
+                total_legacy_migrated += 1
+                total_migrated += 1
+                continue
+
+            # Check if already in new {VAR} format
             if is_encoded_path(old_path):
                 total_already_encoded += 1
                 continue
@@ -117,7 +146,8 @@ def migrate_collection(collection, dry_run=False):
 
     print(f"\n  Summary for {collection.name}:")
     print(f"    Already encoded:  {total_already_encoded}")
-    print(f"    Migrated:         {total_migrated}")
+    print(f"    Legacy migrated:  {total_legacy_migrated}")
+    print(f"    Absolute migr.:   {total_migrated - total_legacy_migrated}")
     print(f"    Unchanged:        {total_unchanged}")
     print(f"    Total:            {total}")
 
@@ -137,9 +167,14 @@ def main():
     print(f"Mode: {'DRY RUN' if args.dry_run else 'MIGRATION'}")
     print()
     print("Path mappings:")
-    print(f"  $DOCS$     -> {DOCS_ROOT}")
-    print(f"  $SRC$      -> {SRC_ROOT}")
-    print(f"  $EXAMPLES$ -> {EXAMPLES_ROOT}")
+    print(f"  {{DOCS}}     -> {DOCS_ROOT}")
+    print(f"  {{SRC}}      -> {SRC_ROOT}")
+    print(f"  {{EXAMPLES}} -> {EXAMPLES_ROOT}")
+    print()
+    print("Legacy format migration:")
+    print(f"  $DOCS$     -> {{DOCS}}")
+    print(f"  $SRC$      -> {{SRC}}")
+    print(f"  $EXAMPLES$ -> {{EXAMPLES}}")
 
     # Connect to ChromaDB
     client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)

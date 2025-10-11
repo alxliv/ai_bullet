@@ -268,6 +268,35 @@ async def index(request: Request):
             detail="Failed to load frontend"
         )
 
+def complete_response(combined_content: str, model: str, message: str):
+    """
+    Called when the complete response has been received and accumulated.
+    This function receives the full combined content from all chunks.
+
+    Args:
+        combined_content: The complete response text from all chunks combined
+        model: The model used for generation
+        message: The original user message/query
+
+    Returns:
+        Processed content (with paths converted to web URLs)
+    """
+    logger.info(f"Complete response received ({len(combined_content)} chars)")
+    logger.debug(f"Model: {model}")
+    logger.debug(f"Original query: {message[:100]}...")  # First 100 chars of query
+    logger.debug(f"Response preview: {combined_content[:200]}...")  # First 200 chars of response
+
+    # You can add any post-processing here:
+    # - Store complete response in database
+    # - Perform analytics on the full response
+    # - Extract structured information
+    # - Generate summaries or metadata
+    # - Trigger notifications or webhooks
+    #
+    # Note: Path conversion from {DOCS}/file.pdf to /docs/file.pdf
+    # is now done in retriever.py at source_label() generation time,
+    # so the LLM receives proper web URLs from the start
+
 async def stream_openai_response(message: str, model: str, use_full_knowledge: bool = False) -> AsyncGenerator[str, None]:
     """Stream responses from OpenAI API using Server-Sent Events format"""
     client = get_openai_client()
@@ -296,12 +325,25 @@ async def stream_openai_response(message: str, model: str, use_full_knowledge: b
 
         logger.info("Response stream opened.")
         start_time = time.perf_counter()
+
+        # Accumulate all chunks into combined content
+        combined_content = ""
+
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 content = chunk.choices[0].delta.content
+
+                # Accumulate content from this chunk
+                combined_content += content
+
                 response = StreamResponse(content=content, error=None)
                 # await asyncio.sleep(0.2)  # Simulate network delay
                 yield f"data: {response.model_dump_json()}\n\n"
+
+        # Call complete_response with the accumulated content
+        # This can be used for logging, analytics, storage, etc.
+        if combined_content:
+            complete_response(combined_content, model, message)
 
         yield "data: [DONE]\n\n"
         elapsed_sec = time.perf_counter() - start_time
