@@ -83,9 +83,7 @@ OPENAI_API_KEY="your-openai-api-key-here"
 # User database - format: username:password,username:password
 USERS_DB=admin:12345,user01:demo
 
-# ChromaDB Telemetry Suppression
-ANONYMIZED_TELEMETRY=False
-CHROMA_TELEMETRY=False
+# (Optional) Other environment overrides go here
 ```
 
 3. **Configure paths in `config.py`:**
@@ -97,6 +95,9 @@ SOURCES_PATH = '~/work/rag_data/bullet3/src'      # Path to Bullet3 source
 EXAMPLES_PATH = "~/work/rag_data/bullet3/examples"  # Path to examples
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 50
+# Telemetry flags are now controlled here instead of .env
+ANONYMIZED_TELEMETRY = False
+CHROMA_TELEMETRY = False
 ```
 > **Note:** Ensure that `DOCUMENTS_PATH`, `SOURCES_PATH`, and `EXAMPLES_PATH` in `config.py` correctly correspond to the folders in your cloned Bullet3 repository. Use provided config_win.py (Windows) or config_posix.py (Linux) as template for your config.py.
 
