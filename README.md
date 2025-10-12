@@ -17,24 +17,35 @@ The system uses OpenAI's embedding models and ChromaDB for vector storage, enabl
 
 ## Features
 
-- **Real-time streaming** of LLM output via SSE (Work in progress)
+- **Real-time streaming** of LLM output via Server-Sent Events (SSE)
 - **Retrieval from multiple sources** (source code + documentation)
-- **Reciprocal Rank Fusion (RRF)** + optional LLM re-rank (Currently score-based fusion is implemented, no RRF)
-- **Token-budgeted context**
-- **Configurable system prompts** (context-only vs. full-knowledge)
-- **Automatic source citation** in Markdown
-- **Simple web-based chat UI**
+- **Score-based fusion** for combining retrieval results from multiple collections
+- **Optional Maximal Marginal Relevance (MMR)** for result diversification
+- **Optional LLM-based re-ranking** using GPT models
+- **Token-budgeted context** building with configurable limits
+- **Dual knowledge modes**: RAG-only (context-based) or full LLM knowledge
+- **Per-user session management** with automatic chat history persistence
+- **Automatic source citation** in Markdown with clickable file links
+- **LaTeX math rendering** support with KaTeX (four delimiter types)
+- **OS-agnostic path system** for cross-platform database portability
+- **HTTP Basic authentication** with user/password management
+- **Modern async architecture** with FastAPI and OpenAI SDK
 
 ---
 
 ## Project Structure
 
-- **webgui.py**: FastAPI backend serving the chat UI, managing sessions, streaming responses, and retrieving relevant snippets from ChromaDB.
-- **chat.html**: Front-end UI (HTML + vanilla JS) for chat interaction, streaming display, markdown rendering, and source link handling.
-- **retriever.py**: Handles query embedding, multi-collection retrieval, fusion, context construction, and message building.
-- **updatadb_code.py**: Script for ingesting source code files into ChromaDB.
-- **updatedb_docs.py**: Script for ingesting documentation files into ChromaDB.
-- **config.py**: Central configuration for paths, collections, and model/API parameters.
+### Core Application Files
+
+- **app.py**: Main FastAPI application serving the chat UI, managing sessions, streaming responses, and retrieving relevant snippets from ChromaDB
+- **web/index.html**: Front-end UI (Jinja2 template) for chat interaction, streaming display, markdown rendering, LaTeX math, and source link handling
+- **retriever.py**: RAG retrieval engine handling query embedding, multi-collection retrieval, fusion, optional MMR/LLM re-ranking, context construction, and message building
+- **updatedb_code.py**: Script for ingesting C++ source code files into ChromaDB with syntax-aware parsing
+- **updatedb_docs.py**: Script for ingesting documentation files (PDF, DOCX, Markdown, text) into ChromaDB
+- **config.py**: Central configuration for paths, collections, model parameters, and telemetry settings
+- **path_utils.py**: OS-agnostic path encoding/decoding system for cross-platform database portability
+- **my_logger.py**: Centralized logging configuration
+- **migrate_paths.py**: Migration tool for converting legacy databases to OS-agnostic path format
 
 ---
 
@@ -121,82 +132,228 @@ python updatedb_docs.py
 python updatedb_code.py
 ```
 
-** You can also run retriever.py as standalone:
+**Migrate existing database to OS-agnostic paths (if needed):**
 ```bash
-# Parse and index C++ files with syntax awareness
-python retriever.py
+# Preview changes before applying
+python migrate_paths.py --dry-run
+
+# Apply migration to convert legacy paths to OS-agnostic format
+python migrate_paths.py
+```
+
+**Test retrieval standalone:**
+```bash
+# Test retrieval without running the web server
+python retriever.py "How do I create a rigid body in Bullet3?"
 ```
 
 #### Running the Web Interface
 
-**Standard server:**
+**Standard server (recommended):**
 ```bash
-python webgui.py
+python app.py
 ```
 
 **Using uvicorn directly:**
 ```bash
-uvicorn webgui:app --host 0.0.0.0 --port 8501 --reload
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
 Or for localhost testing:
 ```bash
-uvicorn webgui:app --host 127.0.0.1 --port 8000 --reload
+uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-**Debug server (for testing math LaTex display):**
-```bash
-python debug_server.py
-```
+**Access the application:**
+- Open your browser to `http://localhost:8000`
+- Log in with credentials configured in `.env` file (USERS_DB)
+- Start asking questions about your project
 
 #### Direct API Usage
 
 **Using the retriever programmatically:**
 ```python
-from retriever import create_retriever, ask_llm
+from retriever import create_retriever
 
-# Create retriever instance
+# Create retriever instance with default configuration
 retriever = create_retriever()
 
-# Ask a question
+# Retrieve relevant context for a question
 question = "How do I create a rigid body in Bullet3?"
-answer, sources = ask_llm(question, retriever)
-print(f"Answer: {answer}")
+hits = retriever.retrieve(question)
+context, sources = retriever.build_context(hits)
+
+# Build messages for OpenAI API
+messages = retriever.build_messages(question, context, use_full_knowledge=False)
+print(f"Context: {context}")
+print(f"Sources: {sources}")
 ```
 
 ### Configuration Options
 
 #### Web Interface Settings
 
-- **Host/Port**: Modify in `webgui.py` or use uvicorn parameters
-- **Authentication**: Configure users in `.env` file using `USERS_DB`
-- **Session Management**: Automatic cleanup of old sessions
+- **Host/Port**: Modify in `app.py` or use uvicorn parameters (default: `0.0.0.0:8000`)
+- **Authentication**: Configure users in `.env` file using `USERS_DB` (format: `username:password,username:password`)
+- **Session Management**: Automatic per-user session tracking with in-memory storage
+- **Session Cleanup**: Automatically removes old sessions when count exceeds 100 (keeps 50 most recent)
+- **Chat History**: All conversations auto-saved to `saved_chats/` directory with metadata
 
-#### Retrieval Settings
+#### Retrieval Settings (RetrieverConfig in retriever.py)
 
-Configure in `config.py`:
-- `EMBEDDING_MODEL`: Choose OpenAI embedding model
-- `CHUNK_SIZE`: Size of text chunks for processing
-- `CHUNK_OVERLAP`: Overlap between consecutive chunks
-- `CHROMA_DB_DIR`: Directory for vector database storage
+- `use_mmr`: Enable Maximal Marginal Relevance for diversity (default: `True`)
+- `use_llm_rerank`: Use LLM for re-ranking instead of MMR (default: `False`)
+- `max_context_tokens`: Token budget for retrieved context (default: `6000`)
+- `max_snippets`: Maximum number of snippets to include (default: `12`)
+- `system_template`: System prompt for RAG-only mode (context-based responses)
+- `system_template_full`: System prompt for full knowledge mode (unrestricted LLM)
+
+#### Database Settings (config.py)
+
+- `EMBEDDING_MODEL`: Choose OpenAI embedding model (e.g., `text-embedding-3-small`)
+- `CHUNK_SIZE`: Size of text chunks for processing (default: `800` tokens)
+- `CHUNK_OVERLAP`: Overlap between consecutive chunks (default: `50` tokens)
+- `CHROMA_DB_DIR`: Directory for ChromaDB vector database storage
+- `DOCUMENTS_PATH`: Path to documentation files for indexing
+- `SOURCES_PATH`: Path to source code files for indexing
+- `EXAMPLES_PATH`: Path to example files for indexing
+- `ANONYMIZED_TELEMETRY`: Disable OpenAI telemetry (default: `False`)
+- `CHROMA_TELEMETRY`: Disable ChromaDB telemetry (default: `False`)
+
+### API Endpoints
+
+#### GET /
+Main chat interface with authentication required. Returns HTML page with chat UI.
+
+Query parameters:
+- `session_id` (optional): Resume existing session
+
+#### POST /chat
+Streaming chat endpoint using Server-Sent Events (SSE).
+
+Request body:
+```json
+{
+  "message": "Your question here",
+  "model": "gpt-4o-mini",
+  "use_full_knowledge": false
+}
+```
+
+Query parameters:
+- `session_id` (optional): Session identifier for conversation continuity
+
+Response: SSE stream with JSON chunks containing `content` or `error` fields
+
+#### POST /sessions/new
+Create a new chat session for the current user.
+
+Response:
+```json
+{
+  "session_id": "username_abc12345",
+  "chat_history": [],
+  "model": "gpt-4o-mini"
+}
+```
+
+#### GET /health
+Health check endpoint.
+
+Response:
+```json
+{
+  "status": "healthy",
+  "openai_configured": true,
+  "version": "0.1.2"
+}
+```
+
+#### GET /models
+List available OpenAI models.
+
+Response:
+```json
+{
+  "models": ["gpt-3.5-turbo", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-5-mini"],
+  "default_model": "gpt-4o-mini"
+}
+```
+
+### Knowledge Modes
+
+The application supports two distinct modes for generating responses:
+
+#### RAG-Only Mode (default, use_full_knowledge=false)
+- Responses generated **only** from retrieved documentation and code context
+- System prompt restricts LLM to use only provided CONTEXT
+- Best for ensuring factual accuracy from indexed materials
+- LLM will say "I don't know" if information is not in the context
+
+#### Full Knowledge Mode (use_full_knowledge=true)
+- LLM can use its full training knowledge in addition to retrieved context
+- Useful for general questions or when RAG context is insufficient
+- May provide broader answers but with potential for hallucination
+- Context still provided for grounding, but not strictly required
+
+### OS-Agnostic Path System
+
+AI Bullet uses an innovative path encoding system that makes ChromaDB databases portable across different operating systems (Windows, Linux, macOS).
+
+#### How It Works
+
+**Path Encoding**: Absolute paths are converted to variable-based format when storing in ChromaDB:
+- Windows: `D:\Work\rag_data\bullet3\docs\file.pdf` → `{DOCS}/file.pdf`
+- Linux: `/home/user/rag_data/bullet3/docs/file.pdf` → `{DOCS}/file.pdf`
+
+**Path Decoding**: Variable-based paths are converted back to absolute paths at runtime based on your `config.py` settings.
+
+**Supported Variables**:
+- `{DOCS}` - Maps to `DOCUMENTS_PATH` in config.py
+- `{SRC}` - Maps to `SOURCES_PATH` in config.py
+- `{EXAMPLES}` - Maps to `EXAMPLES_PATH` in config.py
+
+**Benefits**:
+- Share ChromaDB databases between Windows and Linux systems
+- Move databases without re-indexing all documents
+- Collaborate across different development environments
+
+**Legacy Format**: The old `$VAR$` format is still supported for backward compatibility, but new databases use `{VAR}` format to avoid collisions with LaTeX math notation.
+
+#### Migrating Existing Databases
+
+If you have an existing ChromaDB database with hardcoded absolute paths:
+
+```bash
+# Preview what will be changed
+python migrate_paths.py --dry-run
+
+# Apply the migration
+python migrate_paths.py
+```
+
+This will convert all absolute paths in your database to the OS-agnostic format.
 
 ### Basic Workflow
 
 1. **Preparation Phase:**
-   - Set up OpenAI API key
-   - Configure paths to Bullet3 data
-   - Install dependencies
+   - Set up OpenAI API key in `.env` file
+   - Configure paths to your project data in `config.py`
+   - Install dependencies with `uv pip install -r requirements.txt`
+   - Configure user authentication in `.env` (USERS_DB)
 
 2. **Indexing Phase:**
-   - Run `updatedb_docs.py` to process documentation
-   - Run `updatedb_code.py` to process source code
-   - Verify ChromaDB collections are created
+   - Run `python updatedb_docs.py` to process documentation
+   - Run `python updatedb_code.py` to process source code
+   - Verify ChromaDB collections are created in `chroma_store/` directory
+   - (Optional) Run `python migrate_paths.py` if migrating existing database
 
 3. **Usage Phase:**
-   - Run retriever.py as standalone, for testing
-   - Start local web interface with `uvicorn webgui:app --host 127.0.0.1 --port 8000`
+   - (Optional) Run `python retriever.py "your question"` for standalone testing
+   - Start web interface with `python app.py`
    - Access at `http://localhost:8000`
-   - Log in with configured credentials
-   - Ask questions about Bullet Physics
+   - Log in with configured credentials from `.env`
+   - Select knowledge mode (RAG-only or Full Knowledge)
+   - Ask questions about your project
 
 ### Example Questions
 
@@ -206,13 +363,53 @@ Once set up, you can ask questions like:
 - "Explain the constraint solver implementation"
 - "How does collision detection work in Bullet3?"
 - "What examples are available for soft body dynamics?"
-- "Where class btMotionState is defined?"
+- "Where is class btMotionState defined?"
+- "Describe DeformableDemo"
+- "What value of timeStep is recommended for the integration?"
 
+### Session Management
+
+- **Per-User Sessions**: Each user maintains their own chat history
+- **Session Persistence**: Conversations are automatically saved to `saved_chats/` directory
+- **Session Format**: `username_DD_Mon_YYYY_HH_MM_SS.json`
+- **Session Metadata**: Includes creation time, last update time, model used, and `use_full_knowledge` flag for each message
+- **New Chat**: Click "New Chat" button to start a fresh conversation
+- **Session Cleanup**: Old sessions automatically cleaned up when count exceeds 100
+
+### Saved Chat Format
+
+Chat histories are saved in JSON format with the following structure:
+
+```json
+{
+  "created_on": "12-Oct-2025",
+  "last_update_on": "12-Oct-2025 15:32:04",
+  "session_id": "admin_p6gukreq",
+  "username": "admin",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a precise assistant..."
+    },
+    {
+      "role": "user",
+      "content": "Describe DeformableDemo"
+    },
+    {
+      "role": "assistant",
+      "model": "gpt-4o-mini",
+      "use_full_knowledge": false,
+      "content": "### DeformableDemo Overview\n\n..."
+    }
+  ]
+}
+```
 
 **Logs and Debugging:**
-- Web interface logs appear in console when running `webgui.py`
-- Use `debug_server.py` for isolated testing (Only tot test math formulas display)
-- Messages for all sessions are recorded in the `saved_chats` folder
+- Web interface logs appear in console when running `app.py`
+- All chat conversations are recorded in the `saved_chats/` folder
+- Use `python retriever.py "question"` for isolated retrieval testing
+- Check `/health` endpoint to verify OpenAI configuration
 
 For additional support, please check the project's issue tracker or create a new issue with detailed error information.
 
