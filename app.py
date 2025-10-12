@@ -183,8 +183,8 @@ _username = "demo"
 _session_id = ""
 
 # Session-based message storage - each client gets their own chat history
-user_sessions = {}  # {session_id: {"messages": [...], "model": "..."}}
-current_model = ""  # Will be set to first available model
+user_sessions = {}  # {session_id: {"messages": [...], "model": "...", "username": "..."}}
+current_model = DEFAULT_MODEL  # Track most recently used model globally
 
 def generate_short_id(length=8):
     """Generate a random identifier of given length."""
@@ -195,18 +195,45 @@ def generate_short_id(length=8):
     return random_id
 
 
-def get_or_create_session(username, session_id=None):
-    """Get or create a user session"""
+def get_or_create_session(username: str, session_id: Optional[str] = None) -> str:
+    """
+    Fetch an existing session for a user or create a brand-new one.
 
-    if session_id not in user_sessions:
-        session_id = username+'_'+generate_short_id()
+    Args:
+        username: Authenticated username.
+        session_id: Optional session identifier supplied by the client.
+
+    Returns:
+        A session identifier that is guaranteed to belong to the user.
+    """
+    if session_id and session_id in user_sessions:
+        existing = user_sessions[session_id]
+        if existing.get("username") == username:
+            return session_id
+        logger.warning(
+            "Session %s does not belong to user %s; creating a new session",
+            session_id,
+            username,
+        )
+        session_id = None
+
+    if not session_id or session_id not in user_sessions:
+        session_id = f"{username}_{generate_short_id()}"
         system_prompt = retriever.cfg.system_template
         user_sessions[session_id] = {
             "messages": [{"role": "system", "content": system_prompt}],
-            "model": current_model,
-            "username": username
+            "model": current_model or DEFAULT_MODEL,
+            "username": username,
         }
+
     return session_id
+
+
+def get_session_messages(session_id: str) -> list[dict]:
+    """Return non-system messages for a session."""
+    session_data = user_sessions.get(session_id, {})
+    messages = session_data.get("messages", [])
+    return [msg for msg in messages if msg.get("role") != "system"]
 
 def save_chat_history(session_id):
     """Save current chat history to a JSON file"""
@@ -330,24 +357,30 @@ class ModelsResponse(BaseModel):
     default_model: str = Field(..., description="Default model to use")
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, session_id = None, username: str = Depends(authenticate_user)):
-    # Get or create session
-    if not session_id:
-        request.query_params.get('session_id')
+async def index(
+    request: Request,
+    session_id: Optional[str] = Query(default=None),
+    username: str = Depends(authenticate_user),
+):
+    """Serve the main chat interface."""
+
     session_id = get_or_create_session(username, session_id)
 
-    # Get recent chat history if it exists (exclude system messages)
-    session_data = user_sessions[session_id]
-    all_messages = session_data["messages"]
-    user_messages = [msg for msg in all_messages if msg["role"] != "system"]
-    chat_history = user_messages[-10:] if len(user_messages) > 0 else []
+    session_data = user_sessions.get(session_id)
+    if not session_data:
+        logger.error("Failed to load session %s for user %s", session_id, username)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to load chat session",
+        )
+
+    user_messages = get_session_messages(session_id)
+    chat_history = user_messages[-10:] if user_messages else []
     examples = "What is my dear Jacobi solver?<br>" +\
         "Describe DeformableDemo<br>" +\
         "What value of timeStep is recommended for the integration?<br>" +\
         "Explain struct LuaPhysicsSetup<br>" +\
         "How collisions are calculated?"
-
-    """Serve the main chat interface"""
     try:
         return templates.TemplateResponse("index.html", {
             "title": title,
@@ -464,12 +497,19 @@ async def stream_openai_response(message: str, model: str, use_full_knowledge: b
         yield f"data: {error_response.model_dump_json()}\n\n"
 
 @app.post("/chat")
-async def chat(request: ChatRequest,  session_id: str = Query(None), username: str  = Depends(authenticate_user)):
+async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=None), username: str = Depends(authenticate_user)):
     """Handle streaming chat requests with OpenAI API"""
 
-   # ensure we have a session
-    session_id   = get_or_create_session(username, session_id)
-    session_data = user_sessions[session_id]
+    # ensure we have a session
+    session_id = get_or_create_session(username, session_id)
+    session_data = user_sessions.get(session_id)
+
+    if not session_data:
+        logger.error("Session %s could not be created for user %s", session_id, username)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to initialize chat session",
+        )
 
     client = get_openai_client()
 
@@ -508,6 +548,19 @@ async def chat(request: ChatRequest,  session_id: str = Query(None), username: s
     )
 
 
+@app.post("/sessions/new")
+async def create_new_session(username: str = Depends(authenticate_user)):
+    """Create a brand new chat session for the current user."""
+    session_id = get_or_create_session(username, None)
+    session_data = user_sessions[session_id]
+    logger.info(f"Created new session for {username}, session_id={session_id}")
+    return {
+        "session_id": session_id,
+        "chat_history": get_session_messages(session_id),
+        "model": session_data.get("model", DEFAULT_MODEL),
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -515,7 +568,7 @@ async def health_check():
     return {
         "status": "healthy",
         "openai_configured": client is not None,
-        "version": "1.0.0"
+        "version": version
     }
 
 

@@ -60,6 +60,7 @@
                         <input type="checkbox" id="useFullKnowledge" aria-label="Use full knowledge">
                         <label for="useFullKnowledge">Use full knowledge</label>
                     </div>
+                    <button id="newChatButton" type="button">New Chat</button>
                 </div>
                 <div class="input-group">
                     <input type="text" id="messageInput" placeholder="Query documentation or source code...">
@@ -70,7 +71,19 @@
     </div>
 
     <script>
-        // Wait for libraries to load
+        window.INITIAL_SESSION_DATA = {{ {
+            "sessionId": session_id,
+            "chatHistory": chat_history,
+            "selectedModel": selected_model,
+            "username": username
+        } | tojson }};
+    </script>
+    <script>
+        const initialData = window.INITIAL_SESSION_DATA || {};
+        let accumulatedContent = '';
+        let currentSessionId = initialData.sessionId || null;
+        let defaultMessagesHTML = '';
+
         window.addEventListener('DOMContentLoaded', function() {
             // Configure marked
             marked.setOptions({
@@ -80,34 +93,37 @@
                 mangle: false
             });
 
-            // Render initial math example
-            setTimeout(() => {
-                renderMathInElement(document.getElementById('welcome-message'), {
-                    delimiters: [
-                        {left: '$$', right: '$$', display: true},
-                        {left: '$', right: '$', display: false},
-                        {left: '\\(', right: '\\)', display: false},
-                        {left: '\\[', right: '\\]', display: true}
-                    ],
-                    throwOnError: false,
-                    strict: false
-                });
-            }, 100);
+            const messagesDiv = document.getElementById('messages');
+            if (messagesDiv) {
+                defaultMessagesHTML = messagesDiv.innerHTML;
+            }
+
+            renderChatHistory(initialData.chatHistory || []);
 
             // Load available models from the server
             loadModels();
 
             // Set up event listeners
-            document.getElementById('sendButton').addEventListener('click', sendMessage);
-            document.getElementById('messageInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') sendMessage();
-            });
+            const sendButton = document.getElementById('sendButton');
+            if (sendButton) {
+                sendButton.addEventListener('click', sendMessage);
+            }
 
-            // Focus input
-            document.getElementById('messageInput').focus();
+            const messageInput = document.getElementById('messageInput');
+            if (messageInput) {
+                messageInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') sendMessage();
+                });
+                messageInput.focus();
+            }
+
+            const newChatButton = document.getElementById('newChatButton');
+            if (newChatButton) {
+                newChatButton.addEventListener('click', startNewSession);
+            }
+
+            updateSessionIndicator();
         });
-
-        let accumulatedContent = '';
 
         async function loadModels() {
             const modelSelect = document.getElementById('modelSelect');
@@ -139,8 +155,14 @@
                     ? data.default_model
                     : data.models[0];
 
-                modelSelect.value = defaultModel;
-                modelSelect.dataset.defaultModel = defaultModel;
+                const preferredModel = initialData.selectedModel && data.models.includes(initialData.selectedModel)
+                    ? initialData.selectedModel
+                    : null;
+
+                const nextModel = preferredModel || defaultModel;
+
+                modelSelect.value = nextModel;
+                modelSelect.dataset.defaultModel = nextModel;
                 delete modelSelect.dataset.disablePermanent;
                 modelSelect.disabled = false;
             } catch (error) {
@@ -226,6 +248,117 @@
             }
         }
 
+        function renderWelcomeMessage() {
+            setTimeout(() => {
+                const welcome = document.getElementById('welcome-message');
+                if (welcome) {
+                    renderMathSafely(welcome);
+                }
+            }, 50);
+        }
+
+        function renderChatHistory(history) {
+            const messagesDiv = document.getElementById('messages');
+            if (!messagesDiv) return;
+
+            if (Array.isArray(history) && history.length > 0) {
+                messagesDiv.innerHTML = '';
+                history.forEach(entry => appendHistoryMessage(entry, messagesDiv));
+            } else {
+                messagesDiv.innerHTML = defaultMessagesHTML;
+                renderWelcomeMessage();
+            }
+
+            requestAnimationFrame(() => {
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            });
+
+            updateSessionIndicator();
+        }
+
+        function appendHistoryMessage(entry, container) {
+            if (!entry || !container) return;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'message';
+            const role = entry.role || 'assistant';
+            const content = entry.content || '';
+
+            if (role === 'user') {
+                wrapper.innerHTML = '<div class="user-message">' + escapeHtml(content) + '</div>';
+            } else {
+                const aiMessage = document.createElement('div');
+                aiMessage.className = 'ai-message';
+                aiMessage.innerHTML = processContent(content);
+                wrapper.appendChild(aiMessage);
+                renderMathSafely(aiMessage);
+            }
+
+            container.appendChild(wrapper);
+        }
+
+        function updateSessionIndicator(sessionId = currentSessionId) {
+            const indicator = document.getElementById('sessionIndicator');
+            if (!indicator) return;
+            if (sessionId) {
+                const parts = sessionId.split('_');
+                const suffix = parts.length > 1 ? parts.slice(1).join('_') : sessionId;
+                indicator.textContent = 'Session: ' + suffix;
+                indicator.title = sessionId;
+            } else {
+                indicator.textContent = 'Session: —';
+                indicator.title = '';
+            }
+        }
+
+        async function startNewSession() {
+            const button = document.getElementById('newChatButton');
+            if (button) {
+                button.disabled = true;
+            }
+
+            try {
+                const response = await fetch('/sessions/new', { method: 'POST' });
+                if (!response.ok) {
+                    throw new Error('Failed to create new session');
+                }
+
+                const data = await response.json();
+                currentSessionId = data.session_id || null;
+                accumulatedContent = '';
+                initialData.sessionId = currentSessionId;
+                initialData.chatHistory = data.chat_history || [];
+                if (data.model) {
+                    initialData.selectedModel = data.model;
+                }
+
+                renderChatHistory(initialData.chatHistory);
+
+                const modelSelect = document.getElementById('modelSelect');
+                if (modelSelect) {
+                    if (data.model && Array.from(modelSelect.options).some(option => option.value === data.model)) {
+                        modelSelect.value = data.model;
+                    }
+                    if (data.model) {
+                        modelSelect.dataset.defaultModel = data.model;
+                    }
+                }
+
+                const messageInput = document.getElementById('messageInput');
+                if (messageInput) {
+                    messageInput.value = '';
+                    messageInput.focus();
+                }
+            } catch (error) {
+                console.error('Failed to start new session:', error);
+                showNewChatError(error.message || 'Unable to start a new chat session');
+            } finally {
+                if (button) {
+                    button.disabled = false;
+                }
+            }
+        }
+
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             const button = document.getElementById('sendButton');
@@ -287,7 +420,11 @@
                     payload.use_full_knowledge = useFullKnowledgeCheckbox.checked;
                 }
 
-                const response = await fetch('/chat', {
+                const endpoint = currentSessionId
+                    ? `/chat?session_id=${encodeURIComponent(currentSessionId)}`
+                    : '/chat';
+
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(payload)
@@ -368,6 +505,20 @@
                     messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 });
             }
+        }
+
+        function showNewChatError(message) {
+            const messagesDiv = document.getElementById('messages');
+            if (!messagesDiv) return;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'message';
+            wrapper.innerHTML = '<div class="error-message">Error: ' + escapeHtml(message) + '</div>';
+            messagesDiv.appendChild(wrapper);
+
+            requestAnimationFrame(() => {
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            });
         }
 
         function escapeHtml(text) {
