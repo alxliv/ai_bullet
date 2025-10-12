@@ -95,6 +95,7 @@ class RetrieverConfig:
             "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
             "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](full path to the file) : page,line-range).\n"
             "Example: [btMotionState.h](/src/LinearMath/btMotionState.h).\n"
+            "Never give references (URL) to any source outside - that is those who start with http: or https:"
         ),
         use_llm_rerank: bool = False,
         llm_rerank_model: str = "gpt-3.5-turbo",

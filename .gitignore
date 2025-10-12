@@ -31,9 +31,11 @@ venv.bak/
 # Environment Variables
 .env
 
-# IDE
-.vscode/
+# Ignore everything in .vscode except launch.json
+.vscode/*
 !.vscode/launch.json
+
+# IDE
 .idea/
 *.swp
 *.swo
