@@ -294,7 +294,13 @@ def normalize_repo_links(markdown_text: str) -> str:
             return match.group(0)
 
         if url.startswith("/"):
-            return f"[{url}]({url})"
+            return f"[{text.strip() or url}]({url})"
+
+        normalized_text = text.strip()
+        normalized_url = url.strip()
+
+        if normalized_text.startswith("/"):
+            return f"[{normalized_text}]({normalized_text})"
 
         return match.group(0)
 
@@ -390,11 +396,18 @@ async def index(
 
     user_messages = get_session_messages(session_id)
     chat_history = user_messages[-10:] if user_messages else []
-    examples = "What is my dear Jacobi solver?<br>" +\
-        "Describe DeformableDemo<br>" +\
-        "What value of timeStep is recommended for the integration?<br>" +\
-        "Explain struct LuaPhysicsSetup<br>" +\
-        "How collisions are calculated?"
+    examples = [
+        "Describe DeformableDemo",
+        "What value of timeStep is recommended for the integration?",
+        "What is the Jacobi solver implementation?",
+        "Explain btMotionState class definition",
+        "How does collision detection work in Bullet3?",
+        "Describe the constraint solver architecture",
+        "Explain struct LuaPhysicsSetup",
+        "How to compute the object AABBs?",
+        "What types of constraints are available in Bullet3 and how do I create a hinge joint?"
+    ]
+
     try:
         return templates.TemplateResponse("index.html", {
             "title": title,

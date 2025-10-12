@@ -39,13 +39,9 @@
                         </ul>
                         <p><strong>Example queries:</strong></p>
                         <ul>
-                            <li>What is the Jacobi solver implementation?</li>
-                            <li>Explain btMotionState class definition</li>
-                            <li>How does collision detection work in Bullet3?</li>
-                            <li>Describe the constraint solver architecture</li>
-                            <li>Explain struct LuaPhysicsSetup</li>
-                            <li>How to compute the object AABBs?
-                            <li>What types of constraints are available in Bullet3 and how do I create a hinge joint?</li>
+                            {% for item in example_questions %}
+                                <li>{{ item }}</li>
+                            {% endfor %}
                         </ul>
                     </div>
                 </div>
