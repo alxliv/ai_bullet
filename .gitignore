@@ -51,3 +51,5 @@ saved_chats/*.json
 embeddings/
 chroma_store/
 
+.claude/settings.local.json
+config.py
