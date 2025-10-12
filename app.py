@@ -341,7 +341,7 @@ def normalize_repo_links(markdown_text: str) -> str:
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _replace, markdown_text)
 
 
-def save_response(session_id: str, model: str, user_message: str, assistant_message: str) -> None:
+def save_response(session_id: str, model: str, user_message: str, assistant_message: str, use_full_knowledge: bool = False) -> None:
     """Persist a completed user/assistant exchange to disk."""
     session_data = user_sessions.get(session_id)
 
@@ -360,6 +360,7 @@ def save_response(session_id: str, model: str, user_message: str, assistant_mess
     session_messages.append({
         "role": "assistant",
         "model": model,
+        "use_full_knowledge": use_full_knowledge,
         "content": assistant_message
     })
 
@@ -461,7 +462,7 @@ async def index(
             detail="Failed to load frontend"
         )
 
-def complete_response(combined_content: str, model: str, message: str, session_id: Optional[str] = None):
+def complete_response(combined_content: str, model: str, message: str, session_id: Optional[str] = None, use_full_knowledge: bool = False):
     """
     Called when the complete response has been received and accumulated.
     This function receives the full combined content from all chunks.
@@ -470,6 +471,7 @@ def complete_response(combined_content: str, model: str, message: str, session_i
         combined_content: The complete response text from all chunks combined
         model: The model used for generation
         message: The original user message/query
+        use_full_knowledge: Whether full knowledge mode was used
 
     Returns:
         Processed content (with paths converted to web URLs)
@@ -482,7 +484,7 @@ def complete_response(combined_content: str, model: str, message: str, session_i
     normalized_content = normalize_repo_links(combined_content)
 
     if session_id:
-        save_response(session_id, model, message, normalized_content)
+        save_response(session_id, model, message, normalized_content, use_full_knowledge)
     else:
         logger.warning("Session ID missing; skipping chat persistence")
         logger.debug("Normalized content preview: %s", normalized_content[:200])
@@ -546,7 +548,7 @@ async def stream_openai_response(message: str, model: str, use_full_knowledge: b
         # Call complete_response with the accumulated content
         # This can be used for logging, analytics, storage, etc.
         if combined_content:
-            complete_response(combined_content, model, message, session_id=session_id)
+            complete_response(combined_content, model, message, session_id=session_id, use_full_knowledge=use_full_knowledge)
 
         yield "data: [DONE]\n\n"
         elapsed_sec = time.perf_counter() - start_time
