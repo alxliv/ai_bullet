@@ -258,7 +258,9 @@
             if (!messagesDiv) return;
 
             if (Array.isArray(history) && history.length > 0) {
-                messagesDiv.innerHTML = '';
+                // Keep the welcome header at the top, then append history
+                messagesDiv.innerHTML = defaultMessagesHTML;
+                renderWelcomeMessage();
                 history.forEach(entry => appendHistoryMessage(entry, messagesDiv));
             } else {
                 messagesDiv.innerHTML = defaultMessagesHTML;
