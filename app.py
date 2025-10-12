@@ -196,6 +196,14 @@ def generate_short_id(length=8):
     return random_id
 
 
+def build_chat_filename(username: str, dt: Optional[datetime] = None) -> str:
+    """Return a filesystem-safe path for storing a chat transcript."""
+    dt = dt or datetime.now()
+    timestamp = dt.strftime("%d_%b_%Y_%H_%M_%S").lower()
+    safe_username = re.sub(r"[^\w.-]", "_", username)
+    return str(Path("saved_chats") / f"{safe_username}_{timestamp}.json")
+
+
 def get_or_create_session(
     username: str,
     session_id: Optional[str] = None,
@@ -233,10 +241,17 @@ def get_or_create_session(
     if not session_id or session_id not in user_sessions or force_new:
         session_id = f"{username}_{generate_short_id()}"
         system_prompt = retriever.cfg.system_template
+        os.makedirs("saved_chats", exist_ok=True)
+        save_path = build_chat_filename(username)
+        Path(save_path).touch(exist_ok=True)
+        now = datetime.now()
         user_sessions[session_id] = {
             "messages": [{"role": "system", "content": system_prompt}],
             "model": current_model or DEFAULT_MODEL,
             "username": username,
+            "save_path": save_path,
+            "created_at": now,
+            "last_updated_at": now,
         }
         user_last_session[username] = session_id
 
@@ -262,22 +277,41 @@ def save_chat_history(session_id):
 
     # Create chats directory if it doesn't exist
     os.makedirs("saved_chats", exist_ok=True)
-    filename = f"saved_chats/{session_id}.json"
+
+    save_path = session_data.get("save_path")
+    if not save_path:
+        logger.error("Session %s missing save_path; cannot persist chat history", session_id)
+        return None
+    save_path = str(save_path)
 
     # Prepare chat data
+    created_at = session_data.get("created_at")
+    if not isinstance(created_at, datetime):
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at)
+            except ValueError:
+                created_at = datetime.now()
+        else:
+            created_at = datetime.now()
+        session_data["created_at"] = created_at
+
+    last_updated_at = datetime.now()
+    session_data["last_updated_at"] = last_updated_at
+
     chat_data = {
-        "timestamp": datetime.now().strftime("%H:%M:%S GMT"),
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "created_on": created_at.strftime("%d-%b-%Y"),
+        "last_update_on": last_updated_at.strftime("%d-%b-%Y %H:%M:%S"),
         "session_id": session_id,
-        "message_count": len(messages) - 1,  # Exclude system message
+        "username": session_data.get("username"),
         "messages": messages
     }
 
     # Save to file
     try:
-        with open(filename, 'w', encoding='utf-8') as f:
+        with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(chat_data, f, indent=2, ensure_ascii=False)
-        return filename
+        return save_path
     except Exception as e:
         logger.error(f"Error saving chat: {e}")
         return None
