@@ -29,7 +29,7 @@ from retriever import create_retriever
 from path_utils import DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
 
 
-version = "0.1.2"
+version = "0.1.3"
 title="AI Bullet: AI-Powered Q & A"
 
 logger = setup_logger()
