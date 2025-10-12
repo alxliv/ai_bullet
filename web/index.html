@@ -66,13 +66,18 @@
         </div>
     </div>
 
-    <script>
-        window.INITIAL_SESSION_DATA = {{ {
+    <script id="session-data" type="application/json">
+        {{ {
             "sessionId": session_id,
             "chatHistory": chat_history,
             "selectedModel": selected_model,
             "username": username
-        } | tojson }};
+        } | tojson }}
+    </script>
+    <script>
+        // Parse session data from JSON script tag
+        const sessionDataElement = document.getElementById('session-data');
+        window.INITIAL_SESSION_DATA = sessionDataElement ? JSON.parse(sessionDataElement.textContent) : {};
     </script>
     <script>
         const initialData = window.INITIAL_SESSION_DATA || {};
