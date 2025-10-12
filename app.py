@@ -184,6 +184,7 @@ _session_id = ""
 
 # Session-based message storage - each client gets their own chat history
 user_sessions = {}  # {session_id: {"messages": [...], "model": "...", "username": "..."}}
+user_last_session: dict[str, str] = {}  # Track most recent session per username
 current_model = DEFAULT_MODEL  # Track most recently used model globally
 
 def generate_short_id(length=8):
@@ -195,13 +196,19 @@ def generate_short_id(length=8):
     return random_id
 
 
-def get_or_create_session(username: str, session_id: Optional[str] = None) -> str:
+def get_or_create_session(
+    username: str,
+    session_id: Optional[str] = None,
+    *,
+    force_new: bool = False
+) -> str:
     """
     Fetch an existing session for a user or create a brand-new one.
 
     Args:
         username: Authenticated username.
         session_id: Optional session identifier supplied by the client.
+        force_new: When True, always generate a fresh session for the user.
 
     Returns:
         A session identifier that is guaranteed to belong to the user.
@@ -209,6 +216,7 @@ def get_or_create_session(username: str, session_id: Optional[str] = None) -> st
     if session_id and session_id in user_sessions:
         existing = user_sessions[session_id]
         if existing.get("username") == username:
+            user_last_session[username] = session_id
             return session_id
         logger.warning(
             "Session %s does not belong to user %s; creating a new session",
@@ -217,7 +225,12 @@ def get_or_create_session(username: str, session_id: Optional[str] = None) -> st
         )
         session_id = None
 
-    if not session_id or session_id not in user_sessions:
+    if not force_new:
+        prior_session = user_last_session.get(username)
+        if prior_session and prior_session in user_sessions:
+            return prior_session
+
+    if not session_id or session_id not in user_sessions or force_new:
         session_id = f"{username}_{generate_short_id()}"
         system_prompt = retriever.cfg.system_template
         user_sessions[session_id] = {
@@ -225,6 +238,7 @@ def get_or_create_session(username: str, session_id: Optional[str] = None) -> st
             "model": current_model or DEFAULT_MODEL,
             "username": username,
         }
+        user_last_session[username] = session_id
 
     return session_id
 
@@ -551,7 +565,7 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
 @app.post("/sessions/new")
 async def create_new_session(username: str = Depends(authenticate_user)):
     """Create a brand new chat session for the current user."""
-    session_id = get_or_create_session(username, None)
+    session_id = get_or_create_session(username, None, force_new=True)
     session_data = user_sessions[session_id]
     logger.info(f"Created new session for {username}, session_id={session_id}")
     return {
