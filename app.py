@@ -7,17 +7,18 @@ with AI, featuring LaTeX rendering and streaming responses.
 
 Required packages: pip install fastapi uvicorn openai python-dotenv
 """
-import os
-import time
+import os, time, random, string, json, re
+import secrets
+
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 from datetime import datetime
-
-from fastapi import FastAPI, HTTPException, status, Request
+from fastapi import FastAPI, HTTPException, status, Request, Depends, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
@@ -26,7 +27,7 @@ from dotenv import load_dotenv
 from my_logger import setup_logger;
 from retriever import create_retriever
 from path_utils import DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
-import random, string, json, re
+
 
 version = "0.1.2"
 title="AI Bullet: AI-Powered Q & A"
@@ -67,6 +68,47 @@ HTML_FILE_PATH = Path("web") / "index.html"
 _openai_client: Optional[AsyncOpenAI] = None
 
 retriever = create_retriever()
+
+# Add after the existing imports and before app = FastAPI()
+security = HTTPBasic()
+
+def load_users_from_env():
+    """Load users from environment variable"""
+    users_str = os.getenv("USERS_DB", "")
+    users = {}
+
+    if users_str:
+        try:
+            # Parse format: username:password,username:password
+            for user_pair in users_str.split(','):
+                if ':' in user_pair:
+                    username, password = user_pair.split(':', 1)  # Split only on first ':'
+                    users[username.strip()] = password.strip()
+        except Exception as e:
+            logger.error(f"Error parsing USERS_DB: {e}")
+    return users
+
+# Load users from environment
+USERS = load_users_from_env()
+
+if (len(USERS)==0):
+    logger.error("No users are defined. Please add at least one user to the .env file.")
+    exit(-2)
+logger.info(f"Loaded {len(USERS)} users from environment")
+
+def authenticate_user(credentials: HTTPBasicCredentials = Depends(security)):
+    """Verify user credentials"""
+    username = credentials.username
+    password = credentials.password
+    if username in USERS and secrets.compare_digest(password, USERS[username]):
+        logger.info(f"Auth OK for: {username}")
+        return username
+    logger.warning(f"Not authorized: {username}")
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials",
+        headers={"WWW-Authenticate": "Basic"},
+    )
 
 class Config:
     """Application configuration"""
@@ -288,16 +330,18 @@ class ModelsResponse(BaseModel):
     default_model: str = Field(..., description="Default model to use")
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def index(request: Request, session_id = None, username: str = Depends(authenticate_user)):
     # Get or create session
-    session_id = get_or_create_session(_username, _session_id)
+    if not session_id:
+        request.query_params.get('session_id')
+    session_id = get_or_create_session(username, session_id)
 
     # Get recent chat history if it exists (exclude system messages)
     session_data = user_sessions[session_id]
     all_messages = session_data["messages"]
     user_messages = [msg for msg in all_messages if msg["role"] != "system"]
     chat_history = user_messages[-10:] if len(user_messages) > 0 else []
-    examples = "What is Jacobi solver?<br>" +\
+    examples = "What is my dear Jacobi solver?<br>" +\
         "Describe DeformableDemo<br>" +\
         "What value of timeStep is recommended for the integration?<br>" +\
         "Explain struct LuaPhysicsSetup<br>" +\
@@ -309,7 +353,12 @@ async def index(request: Request):
             "title": title,
             "request": request,
             "version": version,
-            "username": _username
+            "username": username,
+            "chat_history": chat_history,
+            "selected_model": session_data["model"],
+            "session_id": session_id,
+            "username": username,
+            "example_questions": examples
         })
     except Exception as e:
         logger.error(f"Error serving index page: {e}")
@@ -415,11 +464,11 @@ async def stream_openai_response(message: str, model: str, use_full_knowledge: b
         yield f"data: {error_response.model_dump_json()}\n\n"
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest,  session_id: str = Query(None), username: str  = Depends(authenticate_user)):
     """Handle streaming chat requests with OpenAI API"""
 
    # ensure we have a session
-    session_id   = get_or_create_session(_username, _session_id)
+    session_id   = get_or_create_session(username, session_id)
     session_data = user_sessions[session_id]
 
     client = get_openai_client()
