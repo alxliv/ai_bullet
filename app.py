@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from my_logger import setup_logger;
 from retriever import create_retriever
 from path_utils import DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
 version = "0.1.5"
@@ -158,14 +159,27 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# CORS: configure for prod via ALLOWED_ORIGINS env (comma-separated)
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+if not ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS = ["http://localhost:8000", "http://127.0.0.1:8000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],  # Restrict to local origins
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],  # Only allow necessary methods
-    allow_headers=["Content-Type", "Authorization"],  # Restrict headers
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "Cache-Control", "X-Requested-With"],
+    expose_headers=["Content-Type"],
+    max_age=86400,
 )
+
+# Trusted Host protection (prevents Host header attacks)
+ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
+if not ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ["chat.alexlabs.net", "www.chat.alexlabs.net", "localhost", "127.0.0.1"]
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
 # Path roots are now imported from path_utils (DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT)
 # Paths in ChromaDB are now stored using OS-agnostic variable encoding ($DOCS$, $SRC$, $EXAMPLES$)
@@ -605,8 +619,8 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*"
+            "X-Accel-Buffering": "no"
+            # Let CORSMiddleware set Access-Control-Allow-Origin
         }
     )
 
