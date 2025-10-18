@@ -30,7 +30,7 @@ from path_utils import DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
-version = "0.1.6"
+version = "0.1.7"
 title="AI Bullet: AI-Powered Q & A"
 
 logger = setup_logger()
@@ -503,8 +503,6 @@ def complete_response(combined_content: str, model: str, message: str, session_i
         logger.warning("Session ID missing; skipping chat persistence")
         logger.debug("Normalized content preview: %s", normalized_content[:200])
 
-    return normalized_content
-
     # You can add any post-processing here:
     # - Store complete response in database
     # - Perform analytics on the full response
@@ -515,6 +513,8 @@ def complete_response(combined_content: str, model: str, message: str, session_i
     # Note: Path conversion from {DOCS}/file.pdf to /docs/file.pdf
     # is now done in retriever.py at source_label() generation time,
     # so the LLM receives proper web URLs from the start
+
+    return normalized_content
 
 async def stream_openai_response(message: str, model: str, use_full_knowledge: bool = False, session_id: Optional[str] = None) -> AsyncGenerator[str, None]:
     """Stream responses from OpenAI API using Server-Sent Events format"""
@@ -560,9 +560,13 @@ async def stream_openai_response(message: str, model: str, use_full_knowledge: b
                 yield f"data: {response.model_dump_json()}\n\n"
 
         # Call complete_response with the accumulated content
-        # This can be used for logging, analytics, storage, etc.
+        # This normalizes links and saves the response to the session
         if combined_content:
-            complete_response(combined_content, model, message, session_id=session_id, use_full_knowledge=use_full_knowledge)
+            normalized_content = complete_response(combined_content, model, message, session_id=session_id, use_full_knowledge=use_full_knowledge)
+
+            # Send the final normalized content as a complete message
+            final_response = StreamResponse(content=f"\n\n[NORMALIZED_CONTENT]\n{normalized_content}", error=None)
+            yield f"data: {final_response.model_dump_json()}\n\n"
 
         yield "data: [DONE]\n\n"
         elapsed_sec = time.perf_counter() - start_time

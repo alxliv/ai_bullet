@@ -464,13 +464,31 @@
                                         waitingIndicator.remove();
                                     }
 
-                                    accumulatedContent += json.content;
+                                    // Check if this is the final normalized content
+                                    if (json.content.includes('[NORMALIZED_CONTENT]')) {
+                                        // Extract the normalized content after the marker
+                                        const normalizedContent = json.content.split('[NORMALIZED_CONTENT]')[1].trim();
 
-                                    // Process and display content
-                                    aiContent.innerHTML = processContent(accumulatedContent);
+                                        // Replace accumulated content with normalized version
+                                        accumulatedContent = normalizedContent;
 
-                                    // Render math safely
-                                    renderMathSafely(aiContent);
+                                        // Process and display the final normalized content
+                                        aiContent.innerHTML = processContent(normalizedContent);
+
+                                        // Render math safely
+                                        renderMathSafely(aiContent);
+
+                                        console.log('Received final normalized content');
+                                    } else {
+                                        // Normal streaming chunk
+                                        accumulatedContent += json.content;
+
+                                        // Process and display content
+                                        aiContent.innerHTML = processContent(accumulatedContent);
+
+                                        // Render math safely
+                                        renderMathSafely(aiContent);
+                                    }
 
                                     // Scroll to bottom after content update
                                     requestAnimationFrame(() => {
