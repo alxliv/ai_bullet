@@ -1,7 +1,7 @@
 # config_posix.py
 import os
 
-EMBEDDING_MODEL = 'text-embedding-3-small'  # Or other model like "text-embedding-ada-002"
+EMBEDDING_MODEL = 'nomic-embed-text'  # Local embedding model served by Ollama
 CHROMA_DB_DIR = 'chroma_store/'
 DOCUMENTS_PATH = '~/work/rag_data/bullet3/docs'
 SOURCES_PATH =   '~/work/rag_data/bullet3/src'

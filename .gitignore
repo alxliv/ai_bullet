@@ -50,6 +50,8 @@ Thumbs.db
 saved_chats/*.json
 embeddings/
 chroma_store/
+chroma_store_ollama/
+
 
 .claude/settings.local.json
 config.py

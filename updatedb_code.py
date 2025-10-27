@@ -1,20 +1,26 @@
 import os
+import time
 from dotenv import load_dotenv
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
 from path_utils import encode_path
 
-from openai import OpenAI
 import tiktoken
 import chromadb
 import hashlib
-from collections import defaultdict
+import httpx
+from collections import defaultdict, deque
 import lizard
 from pathlib import Path
 
 CPP_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".hxx"}
 
-MAX_ITEM_TOKENS   = 7800           # < 8192 to leave headroom
-MAX_REQUEST_TOKENS= 7800
+MAX_ITEM_TOKENS   = 3000           # < 8192 to leave headroom
+MAX_REQUEST_TOKENS= 4000
+
+MAX_EMBED_RETRIES = 1
+RETRY_INITIAL_DELAY = 1.5
+RETRY_MAX_DELAY = 10.0
+MIN_RETRY_TOKENS = 256
 
 DOCUMENTS_FULL_PATH = os.path.expanduser(DOCUMENTS_PATH)
 SOURCES_FULL_PATH = os.path.expanduser(SOURCES_PATH)
@@ -24,7 +30,12 @@ CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 enc = tiktoken.get_encoding("cl100k_base")
 
 load_dotenv()
-client_oa = OpenAI()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", EMBEDDING_MODEL)
+
+from retriever import OllamaEmbeddingClient  # reuse embedding helper
+
+embed_client = OllamaEmbeddingClient(OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL)
 
 def token_len(txt: str) -> int:
     return len(enc.encode(txt))
@@ -155,12 +166,6 @@ def walk_repo_and_chunk(root_dir):
                 print(f"{count}/{len(files)} files chunked")
     return all_chunks
 
-all_chunks = walk_repo_and_chunk(SOURCES_FULL_PATH)
-print(f"All {len(all_chunks)} chunks from {SOURCES_FULL_PATH} collected.")
-all_chunks_examples = walk_repo_and_chunk(EXAMPLES_FULL_PATH)
-print(f"All {len(all_chunks_examples)} chunks from {EXAMPLES_FULL_PATH} collected.")
-all_chunks += all_chunks_examples
-
 def get_existing_ids(collection):
     """Return a set of all IDs already stored."""
     total = collection.count()
@@ -224,58 +229,162 @@ def prepare_records(chunks):
                 meta.update({"piece_index": idx, "piece_count": len(pieces)})
                 yield {"id": new_id, "text": piece, "metadata": meta}
 
-def batch_by_token_budget(records):
-    """Group records so total tokens per request stays under MAX_REQUEST_TOKENS."""
-    batch, used = [], 0
-    for r in records:
-        tl = token_len(r["text"])
-        # (tl should already be <= MAX_ITEM_TOKENS)
-        if used + tl > MAX_REQUEST_TOKENS and batch:
-            yield batch
-            batch, used = [r], tl
-        else:
-            batch.append(r)
-            used += tl
-    if batch:
-        yield batch
+def make_retry_splits(record, already_seen: set, target_tokens: int):
+    """Split a record into smaller pieces to satisfy embedding limits."""
+    pieces = split_by_tokens(record["text"], target_tokens)
+    if len(pieces) <= 1:
+        return []
+    level = record.get("_split_level", 0) + 1
+    base_meta = dict(record["metadata"])
+    base_meta.setdefault("parent_id", record["metadata"].get("parent_id", record["id"]))
+    base_meta["piece_count"] = len(pieces)
+    splits = []
+    for idx, piece in enumerate(pieces):
+        meta = dict(base_meta)
+        meta.update({
+            "piece_index": idx,
+            "retry_split": True,
+            "split_level": level,
+        })
+        new_id = f"{record['id']}#s{level}-{idx}-{stable_suffix(piece + f'|lvl{level}|{idx}')}"  # stable but unique per level
+        # ensure uniqueness in this run
+        while new_id in already_seen:
+            new_id = f"{record['id']}#s{level}-{idx}-{stable_suffix(piece + f'|lvl{level}|{idx}|{len(splits)}')}"
+        already_seen.add(new_id)
+        splits.append({
+            "id": new_id,
+            "text": piece,
+            "metadata": meta,
+            "_split_level": level,
+        })
+    return splits
 
-def embed_batch(texts):
-    """Call OpenAI embeddings once for a batch of texts."""
-    resp = client_oa.embeddings.create(model=EMBEDDING_MODEL, input=texts)
-    return [d.embedding for d in resp.data]
+def embed_record_with_retry(record, already_seen: set):
+    """
+    Try to embed a record, retrying transient failures and requesting
+    a split when the server keeps rejecting the payload.
+    Returns (embedding, None) on success or (None, new_records) when the caller
+    should process the returned splits instead.
+    """
+    text = record["text"]
+    delay = RETRY_INITIAL_DELAY
+    last_exc = None
+    for attempt in range(1, MAX_EMBED_RETRIES + 1):
+        try:
+            return embed_client.embed(text), None
+        except httpx.HTTPStatusError as exc:  # type: ignore[attr-defined]
+            last_exc = exc
+            status = exc.response.status_code if exc.response is not None else None
+            detail = ""
+            if exc.response is not None:
+                try:
+                    detail = exc.response.text.strip()
+                except Exception:
+                    detail = ""
+            token_count = token_len(text)
+            print(f"[WARN] Embed HTTP {status} for {record['id']} (attempt {attempt}/{MAX_EMBED_RETRIES}, tokens={token_count}).")
+            if detail:
+                print(f"       Detail: {detail[:200]}")
+            if status in {429, 500, 502, 503, 504} or (status is not None and status >= 500):
+                time.sleep(min(delay, RETRY_MAX_DELAY))
+                delay = min(delay * 2, RETRY_MAX_DELAY)
+                continue
+            raise
+        except httpx.RequestError as exc:  # network issues, timeouts, etc.
+            last_exc = exc
+            print(f"[WARN] Transport error during embed for {record['id']} on attempt {attempt}/{MAX_EMBED_RETRIES}: {exc}")
+            time.sleep(min(delay, RETRY_MAX_DELAY))
+            delay = min(delay * 2, RETRY_MAX_DELAY)
+    # Retries exhausted -> attempt to split if possible
+    tokens = token_len(text)
+    if tokens > MIN_RETRY_TOKENS:
+        target = max(MIN_RETRY_TOKENS, min(MAX_ITEM_TOKENS, max(tokens // 2, MIN_RETRY_TOKENS)))
+        splits = make_retry_splits(record, already_seen, target)
+        if splits:
+            print(f"[INFO] Splitting record {record['id']} into {len(splits)} pieces after repeated failures.")
+            return None, splits
+    raise last_exc if last_exc is not None else RuntimeError(f"Embedding failed for {record['id']} with no additional detail.")
 
 def embed_and_add(chunks, collection):
     existing = get_existing_ids(collection)
-    # split long ones
+    already_seen = set(existing)
     records = list(prepare_records(chunks))
-    # ensure uniqueness vs existing AND inside our current run
-    records = uniquify_records(records, already_seen=set(existing))
+    records = uniquify_records(records, already_seen=already_seen)
     if not records:
         print("Nothing new to embed.")
         return
 
-    records_left = len(records)
-    print(f"Total new records to process: {records_left}")
-    for batch in batch_by_token_budget(records):
-        texts     = [r["text"] for r in batch]
-        ids       = [r["id"]   for r in batch]
-        metadatas = [r["metadata"] for r in batch]
-        embs = embed_batch(texts)
-        collection.add(ids=ids, documents=texts, metadatas=metadatas, embeddings=embs)
-        records_left -= len(ids)
-        print(f"Added {len(ids)} records. {records_left} to go")
+    queue = deque(records)
+    total_pending = len(queue)
+    print(f"Total new records to process: {total_pending}")
 
-client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
-collection = client.get_or_create_collection(name="cpp_code")
+    batch_records = []
+    batch_embeddings = []
+    batch_tokens = 0
 
-# SANITY: check that we do not have duplicate IDs
-#ids = [c["id"] for c in all_chunks]
-#dups = [i for i, cnt in Counter(ids).items() if cnt > 1]
-#if dups:
-#    print("WARNING: duplicate IDs in all_chunks:", dups[:10])
+    def flush_batch():
+        nonlocal total_pending, batch_tokens
+        if not batch_records:
+            return
+        ids = [r["id"] for r in batch_records]
+        texts = [r["text"] for r in batch_records]
+        metas = [r["metadata"] for r in batch_records]
+        collection.add(ids=ids, documents=texts, metadatas=metas, embeddings=batch_embeddings)
+        total_pending -= len(ids)
+        print(f"Added {len(ids)} records. {total_pending} to go")
+        batch_records.clear()
+        batch_embeddings.clear()
+        batch_tokens = 0
 
-# ---- call it ----
-embed_and_add(all_chunks, collection)
+    while queue:
+        record = queue.popleft()
+        text = record["text"]
+        tl = token_len(text)
+        if tl > MAX_ITEM_TOKENS:
+            splits = make_retry_splits(record, already_seen, max(MIN_RETRY_TOKENS, MAX_ITEM_TOKENS // 2))
+            if splits:
+                queue.extendleft(reversed(splits))
+                total_pending += len(splits) - 1
+                continue
+            else:
+                print(f"[WARN] Record {record['id']} exceeds MAX_ITEM_TOKENS ({tl}) but cannot be split further.")
+        if batch_records and batch_tokens + tl > MAX_REQUEST_TOKENS:
+            flush_batch()
+        try:
+            embedding, new_records = embed_record_with_retry(record, already_seen)
+        except Exception:
+            flush_batch()
+            raise
+        if new_records:
+            queue.extendleft(reversed(new_records))
+            total_pending += len(new_records) - 1
+            continue
+        batch_records.append(record)
+        batch_embeddings.append(embedding)
+        batch_tokens += tl
 
-print("All done.")
+    flush_batch()
+
+if __name__ == "__main__":
+    client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
+    collection = client.get_or_create_collection(name="cpp_code")
+
+    code_chunks = walk_repo_and_chunk(SOURCES_FULL_PATH)
+    print(f"All {len(code_chunks)} chunks from {SOURCES_FULL_PATH} collected.")
+    example_chunks = walk_repo_and_chunk(EXAMPLES_FULL_PATH)
+    print(f"All {len(example_chunks)} chunks from {EXAMPLES_FULL_PATH} collected.")
+    all_chunks = code_chunks + example_chunks
+
+    # SANITY: check that we do not have duplicate IDs
+    #ids = [c["id"] for c in all_chunks]
+    #dups = [i for i, cnt in Counter(ids).items() if cnt > 1]
+    #if dups:
+    #    print("WARNING: duplicate IDs in all_chunks:", dups[:10])
+
+    # ---- call it ----
+    embed_and_add(all_chunks, collection)
+
+    print("All done.")
+
+    embed_client.close()
 

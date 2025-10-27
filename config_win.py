@@ -1,7 +1,7 @@
 # config_win.py
 import os
 
-EMBEDDING_MODEL = 'text-embedding-3-small'  # Or other model like "text-embedding-ada-002"
+EMBEDDING_MODEL = 'nomic-embed-text'  # Local embedding model served by Ollama
 CHROMA_DB_DIR = 'chroma_store/'
 DOCUMENTS_PATH = 'D:/Work22/bullet3/docs'
 SOURCES_PATH =   'D:/Work22/bullet3/src'

@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-OpenAI Chat Client with Math and Markdown Rendering
+Local LLM Chat Client with Math and Markdown Rendering
 
 A FastAPI application that provides a web interface for mathematical conversations
-with AI, featuring LaTeX rendering and streaming responses.
-
-Required packages: pip install fastapi uvicorn openai python-dotenv
+with AI, featuring LaTeX rendering, RAG context, and streaming responses.
 """
 import os, time, random, string, json, re
 import secrets
 
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Any
 from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, status, Request, Depends, Query
@@ -21,8 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
+import httpx
 from dotenv import load_dotenv
 from my_logger import setup_logger;
 from retriever import create_retriever
@@ -31,7 +28,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
 version = "0.1.7"
-title="AI Bullet: AI-Powered Q & A"
+title="GPTil: Local AI-Powered Q & A"
 
 logger = setup_logger()
 # Example usage
@@ -43,15 +40,16 @@ logger = setup_logger()
 
 load_dotenv()
 
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 AVAILABLE_MODELS = [
-    "gpt-4o-mini",
-    "gpt-4o",
-    "gpt-4-turbo",
-    "gpt-3.5-turbo",
-    "gpt-5-mini"
+    model.strip()
+    for model in os.getenv("OLLAMA_MODELS", "gwen-instruct").split(",")
+    if model.strip()
 ]
+if not AVAILABLE_MODELS:
+    AVAILABLE_MODELS = ["gwen-instruct"]
 
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = os.getenv("OLLAMA_DEFAULT_MODEL", AVAILABLE_MODELS[0])
 
 logger.info(f"Available models: {AVAILABLE_MODELS}")
 logger.info(f"Default model: {DEFAULT_MODEL}")
@@ -66,12 +64,56 @@ templates = Jinja2Templates(directory="web")
 HTML_FILE_PATH = Path("web") / "index.html"
 
 # Global client instance
-_openai_client: Optional[AsyncOpenAI] = None
+_ollama_client: Optional["OllamaChatClient"] = None
 
 retriever = create_retriever()
 
 # Add after the existing imports and before app = FastAPI()
 security = HTTPBasic()
+
+
+class OllamaChatClient:
+    """Thin async wrapper around the local Ollama HTTP API."""
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=None)
+
+    async def close(self) -> None:
+        """Tear down the underlying HTTP client."""
+        await self._client.aclose()
+
+    async def chat_stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        options: Optional[dict[str, Any]] = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Stream chat completions from Ollama.
+
+        Yields the raw JSON payloads delivered by Ollama's streaming API.
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+        }
+        if options:
+            payload["options"] = options
+
+        async with self._client.stream("POST", "/api/chat", json=payload) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.debug("Skipping non-JSON stream fragment from Ollama: %s", line)
+                    continue
+                yield data
 
 def load_users_from_env():
     """Load users from environment variable"""
@@ -116,39 +158,43 @@ class Config:
 
     def __init__(self):
         load_dotenv()
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", OLLAMA_BASE_URL).rstrip("/")
         self.host = os.getenv("HOST", "0.0.0.0")
         self.port = int(os.getenv("PORT", "8000"))
 
     @property
-    def has_openai_key(self) -> bool:
-        return bool(self.openai_api_key)
+    def has_ollama_endpoint(self) -> bool:
+        return bool(self.ollama_base_url)
 
 
-def get_openai_client() -> Optional[AsyncOpenAI]:
-    """Get the OpenAI client instance"""
-    return _openai_client
+def get_ollama_client() -> Optional[OllamaChatClient]:
+    """Get the Ollama client instance"""
+    return _ollama_client
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Application lifespan manager"""
-    global _openai_client
+    global _ollama_client
     config = Config()
 
-    # Initialize OpenAI client if API key is available
-    if config.has_openai_key:
-        _openai_client = AsyncOpenAI(api_key=config.openai_api_key)
-        logger.info("OpenAI client initialized")
+    # Initialize Ollama client if endpoint is available
+    if config.has_ollama_endpoint:
+        try:
+            _ollama_client = OllamaChatClient(config.ollama_base_url)
+            logger.info("Ollama client initialized at %s", config.ollama_base_url)
+        except Exception as exc:
+            _ollama_client = None
+            logger.error("Failed to initialize Ollama client: %s", exc)
     else:
-        logger.warning("OpenAI API key not found - client not initialized")
+        logger.warning("OLLAMA_BASE_URL not configured - client not initialized")
 
     yield
 
     # Cleanup
-    if _openai_client:
-        await _openai_client.close()
-        logger.info("OpenAI client closed")
+    if _ollama_client:
+        await _ollama_client.close()
+        logger.info("Ollama client closed")
 
 
 # Initialize FastAPI app with lifespan
@@ -392,7 +438,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="The user's message")
     model: str = Field(
         default=DEFAULT_MODEL,
-        description="OpenAI model to use for the response"
+        description="Ollama model to use for the response"
     )
     use_full_knowledge: bool = Field(
         default=False,
@@ -421,7 +467,7 @@ class StreamResponse(BaseModel):
 
 
 class ModelsResponse(BaseModel):
-    """Response model for available OpenAI models"""
+    """Response model for available Ollama models"""
     models: list[str] = Field(..., description="List of available models")
     default_model: str = Field(..., description="Default model to use")
 
@@ -516,70 +562,78 @@ def complete_response(combined_content: str, model: str, message: str, session_i
 
     return normalized_content
 
-async def stream_openai_response(message: str, model: str, use_full_knowledge: bool = False, session_id: Optional[str] = None) -> AsyncGenerator[str, None]:
-    """Stream responses from OpenAI API using Server-Sent Events format"""
-    client = get_openai_client()
+async def stream_ollama_response(
+    message: str,
+    model: str,
+    use_full_knowledge: bool = False,
+    session_id: Optional[str] = None,
+) -> AsyncGenerator[str, None]:
+    """Stream responses from the local Ollama API using Server-Sent Events format."""
+    client = get_ollama_client()
 
     if not client:
-        error_response = ErrorResponse(error="OpenAI API key not configured")
+        error_response = ErrorResponse(error="Ollama endpoint not configured")
         yield f"data: {error_response.model_dump_json()}\n\n"
         return
 
     try:
         hits = retriever.retrieve(message)
-        ctx, sources = retriever.build_context(hits)
+        ctx, _sources = retriever.build_context(hits)
         messages = retriever.build_messages(message, ctx, use_full_knowledge=use_full_knowledge)
 
-        # Use max_completion_tokens for GPT-5 models, max_tokens for others
-        token_param = "max_completion_tokens" if model.startswith("gpt-5") else "max_tokens"
-        max_tokens = 8000 if model.startswith("gpt-5") else 3000
-        stream_params = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-            token_param: max_tokens
-        }
-
-        stream = await client.chat.completions.create(**stream_params)
-
-        logger.info("Response stream opened.")
+        logger.info("Opening Ollama response stream for model %s", model)
         start_time = time.perf_counter()
-
-        # Accumulate all chunks into combined content
         combined_content = ""
 
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                content = chunk.choices[0].delta.content
+        async for chunk in client.chat_stream(model=model, messages=messages):
+            if chunk.get("error"):
+                raise RuntimeError(chunk["error"])
 
-                # Accumulate content from this chunk
-                combined_content += content
+            content_piece = ""
+            if "message" in chunk:
+                content_piece = chunk["message"].get("content", "") or ""
+            elif "response" in chunk:
+                # Some Ollama versions stream under 'response'
+                content_piece = chunk.get("response") or ""
 
-                response = StreamResponse(content=content, error=None)
-                # await asyncio.sleep(0.2)  # Simulate network delay
+            if content_piece:
+                combined_content += content_piece
+                response = StreamResponse(content=content_piece, error=None)
                 yield f"data: {response.model_dump_json()}\n\n"
 
-        # Call complete_response with the accumulated content
-        # This normalizes links and saves the response to the session
-        if combined_content:
-            normalized_content = complete_response(combined_content, model, message, session_id=session_id, use_full_knowledge=use_full_knowledge)
+            if chunk.get("done"):
+                break
 
-            # Send the final normalized content as a complete message
-            final_response = StreamResponse(content=f"\n\n[NORMALIZED_CONTENT]\n{normalized_content}", error=None)
+        if combined_content:
+            normalized_content = complete_response(
+                combined_content,
+                model,
+                message,
+                session_id=session_id,
+                use_full_knowledge=use_full_knowledge,
+            )
+            final_response = StreamResponse(
+                content=f"\n\n[NORMALIZED_CONTENT]\n{normalized_content}",
+                error=None,
+            )
             yield f"data: {final_response.model_dump_json()}\n\n"
 
         yield "data: [DONE]\n\n"
         elapsed_sec = time.perf_counter() - start_time
-        logger.info(f"Response streaming completed successfully in {elapsed_sec:.2f} sec")
+        logger.info("Response streaming completed in %.2f sec", elapsed_sec)
 
-    except Exception as e:
-        logger.error(f"OpenAI API error: {e}")
-        error_response = ErrorResponse(error=f"API error: {str(e)}")
+    except httpx.HTTPError as exc:
+        logger.error("Ollama HTTP error: %s", exc)
+        error_response = ErrorResponse(error=f"Ollama HTTP error: {exc}")
+        yield f"data: {error_response.model_dump_json()}\n\n"
+    except Exception as exc:
+        logger.error("Ollama streaming error: %s", exc)
+        error_response = ErrorResponse(error=f"Ollama error: {exc}")
         yield f"data: {error_response.model_dump_json()}\n\n"
 
 @app.post("/chat")
 async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=None), username: str = Depends(authenticate_user)):
-    """Handle streaming chat requests with OpenAI API"""
+    """Handle streaming chat requests with the local Ollama API"""
 
     # ensure we have a session
     session_id = get_or_create_session(username, session_id)
@@ -592,12 +646,12 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
             detail="Unable to initialize chat session",
         )
 
-    client = get_openai_client()
+    client = get_ollama_client()
 
     if not client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OpenAI API key not configured"
+            detail="Ollama endpoint not configured"
         )
 
     if request.model not in AVAILABLE_MODELS:
@@ -613,7 +667,7 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
     logger.info(f"Chat request: model={request.model}, message_length={len(request.message)}, use_full_knowledge={request.use_full_knowledge}")
 
     return StreamingResponse(
-        stream_openai_response(
+        stream_ollama_response(
             request.message,
             request.model,
             request.use_full_knowledge,
@@ -645,19 +699,20 @@ async def create_new_session(username: str = Depends(authenticate_user)):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    client = get_openai_client()
+    client = get_ollama_client()
     return {
         "status": "healthy",
-        "openai_configured": client is not None,
+        "ollama_configured": client is not None,
+        "ollama_base_url": OLLAMA_BASE_URL,
         "version": version
     }
 
 
 @app.get("/models", response_model=ModelsResponse)
 async def list_models():
-    """Return the list of available OpenAI models"""
+    """Return the list of available Ollama models"""
     if not AVAILABLE_MODELS:
-        logger.error("No OpenAI models configured")
+        logger.error("No Ollama models configured")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No models configured"
@@ -676,16 +731,16 @@ async def list_models():
 def print_startup_info(config: Config):
     """Print application startup information"""
     print("=" * 60)
-    print("OpenAI Math Chat Server")
+    print("Local Math Chat Server")
     print("=" * 60)
 
-    if not config.has_openai_key:
-        print("WARNING: OPENAI_API_KEY not found!")
+    if not config.has_ollama_endpoint:
+        print("WARNING: OLLAMA_BASE_URL not configured!")
         print("Create a .env file with:")
-        print("OPENAI_API_KEY=your_api_key_here")
-        print("The server will run but chat functionality will be disabled.")
+        print("OLLAMA_BASE_URL=http://127.0.0.1:11434")
+        print("Ensure Ollama is running locally with the desired model pulled.")
     else:
-        print("OpenAI API key loaded")
+        print(f"Ollama endpoint: {config.ollama_base_url}")
 
     print(f"Starting server at http://{config.host}:{config.port}")
     print("Health check: /health")

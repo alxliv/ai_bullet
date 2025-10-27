@@ -3,11 +3,11 @@ retriever.py
 --------------
 
 Query -> retrieve from multiple Chroma collections (e.g. "cpp_code" and "bullet_docs")
--> fuse results -> build a prompt/context block for an OpenAI chat model.
+-> fuse results -> build a prompt/context block for a local chat model.
 
 Features
 =========
-- Single embedding of the query (OpenAI embeddings API).
+- Single embedding of the query (local embedding model via Ollama).
 - Retrieve from any number of Chroma collections.
 - Reciprocal Rank Fusion (RRF) to merge ranked lists.
 - Optional Maximal Marginal Relevance (MMR) diversification step.
@@ -33,7 +33,7 @@ Usage
     ctx, sources = r.build_context(hits)
     messages = r.build_messages(query="How is the constraint solver implemented?", context=ctx)
 
-    # send `messages` to OpenAI Chat Completions
+    # send `messages` to the chat model
 
 """
 from __future__ import annotations
@@ -42,19 +42,51 @@ import os
 import json
 import math
 import time
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-import tiktoken  # type: ignore
-from openai import OpenAI
-from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
+
+import httpx
 import chromadb
+import tiktoken  # type: ignore
 from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
+
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
 
-CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
-
 load_dotenv()
+
+CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", EMBEDDING_MODEL)
+
+logger = logging.getLogger(__name__)
+
+
+ChatMessage = Dict[str, str]
+
+
+class OllamaEmbeddingClient:
+    """Synchronous helper for calling Ollama's embedding endpoint."""
+
+    def __init__(self, base_url: str, model: str):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self._client = httpx.Client(base_url=self.base_url, timeout=None)
+
+    def embed(self, text: str) -> List[float]:
+        payload = {"model": self.model, "prompt": text}
+        response = self._client.post("/api/embeddings", json=payload)
+        response.raise_for_status()
+        data = response.json()
+        embedding = data.get("embedding")
+        if not isinstance(embedding, list):
+            raise RuntimeError("Ollama embeddings response missing 'embedding' vector")
+        return embedding
+
+    def close(self) -> None:
+        self._client.close()
+
 
 # ----------------------------
 # Data structures
@@ -251,26 +283,20 @@ class Retriever:
         self,
         collections: Mapping[str, ChromaCollection],
         config: Optional[RetrieverConfig] = None,
-        openai_client: Optional[OpenAI] = None,
+        embedding_client: Optional[OllamaEmbeddingClient] = None,
     ) -> None:
         """
         collections: dict name -> chroma collection object
         """
         self.collections = dict(collections)
         self.cfg = config or RetrieverConfig()
-        self.oa = openai_client or OpenAI()
-        # try:
-        #     resp = self.oa.models.list()
-        #     print("Available models:")
-        #     for m in resp.data:
-        #         print(f"{m.id}")
-        # except Exception as e:
-        #     print(f"Error fetching models from OpenAI: {e}")
+        embed_model = self.cfg.embedding_model or OLLAMA_EMBED_MODEL
+        self.embedder = embedding_client or OllamaEmbeddingClient(OLLAMA_BASE_URL, embed_model)
+        logger.info("Retriever initialized with Ollama embedding model '%s'", embed_model)
 
     # --------- Embedding ---------
     def embed_query(self, query: str) -> List[float]:
-        resp = self.oa.embeddings.create(model=self.cfg.embedding_model, input=query)
-        return resp.data[0].embedding
+        return self.embedder.embed(query)
 
     # --------- Retrieval ---------
     def _query_one(self, name: str, col, q_emb: List[float], k: int) -> List[Hit]:
@@ -412,39 +438,39 @@ class Retriever:
 
         return "\n\n".join(context_parts), sources
 
-    def build_messages(self, query: str, context: str, use_full_knowledge=False) -> List[ChatCompletionSystemMessageParam]:
+    def build_messages(self, query: str, context: str, use_full_knowledge: bool = False) -> List[ChatMessage]:
         system_msg = self.cfg.system_template_full if use_full_knowledge else self.cfg.system_template
         user_msg = self.cfg.user_template.format(query=query, context=context)
         messages = [
-            ChatCompletionSystemMessageParam(role="system", content=system_msg),
-            ChatCompletionUserMessageParam(role="user", content=user_msg)
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
         ]
         return messages
 
-def ask_llm(query: str, retriever, model="gpt-4o-mini", use_full_knowledge=False, streaming=False):
+def ask_llm(query: str, retriever, model: str = "gwen-instruct", use_full_knowledge: bool = False, streaming: bool = False):
     # 1) retrieve + build context
     hits = retriever.retrieve(query)
     ctx, sources = retriever.build_context(hits)
     messages = retriever.build_messages(query, ctx, use_full_knowledge)
 
-    # 2) call OpenAI
-    know_str='full knowledge' if use_full_knowledge else 'only context'
-    print(f"Calling OpenAI [{know_str}]...")
-    temperature = 1 if ("-mini" in model or "-nano" in model) else 0  # set 1 for mini/nano models, else 0
-
-    resp = retriever.oa.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=streaming,
-        temperature=temperature
-    )
     if streaming:
-        print("Start stream from OpenAI")
-        return resp, sources
-    else:
-        print("Got answer from OpenAI")
+        raise NotImplementedError("Streaming CLI helper not implemented for local Ollama client")
 
-    answer = resp.choices[0].message.content
+    # 2) call Ollama
+    know_str='full knowledge' if use_full_knowledge else 'only context'
+    print(f"Calling Ollama [{know_str}]...")
+    payload = {
+        "model": model,
+        "messages": messages,
+    }
+    with httpx.Client(base_url=OLLAMA_BASE_URL, timeout=None) as client:
+        resp = client.post("/api/chat", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    message = data.get("message") or {}
+    answer = message.get("content") or data.get("response", "")
+    print("Got answer from Ollama")
     return answer, sources
 
 

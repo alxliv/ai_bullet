@@ -3,13 +3,13 @@
 updatedb.py
 ===========
 Walk a DOCS directory, extract text from PDF / DOCX / Markdown (and plain .txt),
-chunk it with token-aware splits, embed with OpenAI, and store in a ChromaDB
+chunk it with token-aware splits, embed with a local Ollama model, and store in a ChromaDB
 collection (e.g. "all_documents"), avoiding duplicate IDs and oversize requests.
 
 This mirrors the token-budget logic you used for the cpp_code collection.
 
 Dependencies (install what you need):
-    pip install chromadb openai tiktoken pypdf python-docx
+    pip install chromadb tiktoken pypdf python-docx httpx
     # optional fallbacks:
     # pip install textract  (for legacy .doc)  OR skip .doc files
 
@@ -36,7 +36,7 @@ from path_utils import encode_path
 # ------------- Third-party deps -------------
 import chromadb
 from chromadb.config import Settings, DEFAULT_TENANT, DEFAULT_DATABASE
-from openai import OpenAI, BadRequestError
+import httpx
 
 # ------------- Config defaults -------------
 EMBED_MODEL = EMBEDDING_MODEL
@@ -50,6 +50,13 @@ SOURCES_FULL_PATH = os.path.expanduser(SOURCES_PATH)
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
 load_dotenv()
+
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", EMBED_MODEL)
+
+from retriever import OllamaEmbeddingClient
+
+embed_client = OllamaEmbeddingClient(OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL)
 
 
 _ENC = tiktoken.get_encoding("cl100k_base")
@@ -257,7 +264,7 @@ def batch_by_token_budget(records: List[Dict[str, Any]], max_req_tokens: int = M
     if batch:
         yield batch
 
-def embed_and_add(records: List[Dict[str, Any]], col, client_oa: OpenAI, verbose: bool = True):
+def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
     if not records:
         if verbose:
             print("Nothing to embed.")
@@ -267,21 +274,18 @@ def embed_and_add(records: List[Dict[str, Any]], col, client_oa: OpenAI, verbose
         ids       = [r["id"] for r in batch]
         metadatas = [r["metadata"] for r in batch]
         try:
-            resp = client_oa.embeddings.create(model=EMBED_MODEL, input=texts)
-            embs = [d.embedding for d in resp.data]
-        except BadRequestError as e:
+            embs = [embed_client.embed(text) for text in texts]
+        except httpx.HTTPStatusError as e:
             msg = str(e)
-            if "maximum context length" in msg:
+            if "413" in msg or "request too large" in msg.lower():
                 print("Batch too big, resplitting...")
-                # split items again aggressively
                 smaller = []
                 for r in batch:
                     for piece in split_by_tokens(r["text"], MAX_ITEM_TOKENS // 2):
                         smaller.append({**r, "id": f"{r['id']}#rs{short_hash(piece)}", "text": piece})
-                embed_and_add(smaller, col, client_oa, verbose)
+                embed_and_add(smaller, col, verbose)
                 continue
-            else:
-                raise
+            raise
         col.add(ids=ids, documents=texts, metadatas=metadatas, embeddings=embs)
         if verbose:
             print(f"Added {len(ids)} records")
@@ -339,9 +343,9 @@ def main():
     print(f"After dedup: {len(uniq_records)} new chunks to embed")
 
     # Embed & store
-    oa = OpenAI()
-    embed_and_add(uniq_records, col, oa, verbose=True)
+    embed_and_add(uniq_records, col, verbose=True)
     print("Done.")
+    embed_client.close()
 
 
 if __name__ == "__main__":
