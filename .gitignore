@@ -55,3 +55,4 @@ chroma_store_ollama/
 
 .claude/settings.local.json
 config.py
+chroma_store_qwen3/

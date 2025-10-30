@@ -48,11 +48,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import httpx
 import chromadb
-import tiktoken  # type: ignore
 from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
 
 from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from tokenizer_utils import count_tokens as token_len_func, truncate as truncate_text
 
 load_dotenv()
 
@@ -100,7 +100,7 @@ class RetrieverConfig:
         rrf_b: int = 60,
         mmr_lambda: float = 0.5,
         use_mmr: bool = True,
-        max_context_tokens: int = 6000,
+        max_context_tokens: int = 16000,  # Optimized for Qwen3-4B (256K context)
         max_snippets: int = 12,
         code_lang_key: str = "node_type",
         code_lang_values: Sequence[str] = ("function", "leftover_block"),
@@ -213,8 +213,8 @@ class Hit:
 # ----------------------------
 
 def _token_len(text: str, model: str = "cl100k_base") -> int:
-    enc = tiktoken.get_encoding(model)
-    return len(enc.encode(text))
+    """Count tokens using Qwen3 tokenizer (model parameter ignored for compatibility)."""
+    return token_len_func(text)
 
 
 def _cosine_to_similarity(distance: float) -> float:
@@ -365,13 +365,13 @@ class Retriever:
             return []
 
         max_tok = getattr(cfg, 'llm_rerank_max_chunk_tokens', 512)
-        if tiktoken is not None:
-            enc_local = tiktoken.get_encoding("cl100k_base")
-            def _trunc(t: str) -> str:
-                toks = enc_local.encode(t)
-                return enc_local.decode(toks[:max_tok]) if len(toks) > max_tok else t
-        else:
-            def _trunc(t: str) -> str:
+
+        def _trunc(t: str) -> str:
+            try:
+                truncated, _ = truncate_text(t, max_tok)
+                return truncated
+            except RuntimeError:
+                # Fallback if tokenizer not available
                 return t[:max_tok*4]
 
         parts = []

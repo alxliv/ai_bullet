@@ -1,10 +1,10 @@
 import os
 import time
 from dotenv import load_dotenv
-from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL, IGNORE_FILES
 from path_utils import encode_path
+from tokenizer_utils import count_tokens, split_by_tokens as split_by_tokens_util
 
-import tiktoken
 import chromadb
 import hashlib
 import httpx
@@ -14,20 +14,20 @@ from pathlib import Path
 
 CPP_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".hxx"}
 
-MAX_ITEM_TOKENS   = 3000           # < 8192 to leave headroom
-MAX_REQUEST_TOKENS= 4000
+# Optimized for Qwen3-4B (256K context window)
+# See TOKEN_LIMITS_GUIDE.md for rationale
+MAX_ITEM_TOKENS   = 3000           # Handles larger functions/classes with context
+MAX_REQUEST_TOKENS= 12000          # Larger batches for structured code
 
-MAX_EMBED_RETRIES = 1
-RETRY_INITIAL_DELAY = 1.5
-RETRY_MAX_DELAY = 10.0
-MIN_RETRY_TOKENS = 256
+MAX_EMBED_RETRIES = 3
+RETRY_INITIAL_DELAY = 0.2
+RETRY_MAX_DELAY = 5.0
+MIN_RETRY_TOKENS = 512
 
 DOCUMENTS_FULL_PATH = os.path.expanduser(DOCUMENTS_PATH)
 SOURCES_FULL_PATH = os.path.expanduser(SOURCES_PATH)
 EXAMPLES_FULL_PATH = os.path.expanduser(EXAMPLES_PATH)
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
-
-enc = tiktoken.get_encoding("cl100k_base")
 
 load_dotenv()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
@@ -38,14 +38,24 @@ from retriever import OllamaEmbeddingClient  # reuse embedding helper
 embed_client = OllamaEmbeddingClient(OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL)
 
 def token_len(txt: str) -> int:
-    return len(enc.encode(txt))
+    """Count tokens using Qwen3 tokenizer."""
+    try:
+        return count_tokens(txt)
+    except RuntimeError:
+        # Fallback to character-based estimation if tokenizer not available
+        return len(txt) // 4
 
 def short_hash(text: str, length=8) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:length]
 
 def split_by_tokens(txt: str, max_tokens: int) -> list[str]:
-    toks = enc.encode(txt)
-    return [enc.decode(toks[i:i+max_tokens]) for i in range(0, len(toks), max_tokens)]
+    """Split text by tokens using Qwen3 tokenizer."""
+    try:
+        return split_by_tokens_util(txt, max_tokens)
+    except RuntimeError:
+        # Fallback to character-based splitting if tokenizer not available
+        step = max_tokens * 4
+        return [txt[i:i+step] for i in range(0, len(txt), step)]
 
 def grab_leading_comment(lines, start_idx, max_gap=2):
     """
@@ -154,16 +164,98 @@ def extract_chunks_with_lizard(path, include_comments=True):
 
     return chunks
 
-def walk_repo_and_chunk(root_dir):
+def should_ignore_file(filename: str, ignore_patterns) -> bool:
+    """
+    Check if a file should be ignored based on ignore rules.
+
+    Args:
+        filename: Name of the file to check
+        ignore_patterns: Set or iterable of ignore patterns (exact names or wildcards)
+
+    Returns:
+        True if file should be ignored, False otherwise
+
+    Examples:
+        >>> should_ignore_file("test.cpp", {"test.cpp"})
+        True
+        >>> should_ignore_file("landscapeData.h", {"landscapeData.h"})
+        True
+        >>> should_ignore_file("test_main.cpp", {"test_*.cpp"})
+        True
+    """
+    import fnmatch
+
+    if not ignore_patterns:
+        return False
+
+    # Check exact match first (faster)
+    if filename in ignore_patterns:
+        return True
+
+    # Check wildcard patterns
+    for pattern in ignore_patterns:
+        if '*' in pattern or '?' in pattern:
+            if fnmatch.fnmatch(filename, pattern):
+                return True
+
+    return False
+
+
+def walk_repo_and_chunk(root_dir, ignore_files=None):
+    """
+    Walk directory tree and extract code chunks from C/C++ files.
+
+    Args:
+        root_dir: Root directory to search
+        ignore_files: Set of filenames/patterns to skip. Supports:
+                     - Exact names: {"landscapeData.h", "test.cpp"}
+                     - Wildcards: {"test_*.cpp", "*_generated.h"}
+
+    Returns:
+        List of chunk dictionaries
+
+    Examples:
+        >>> chunks = walk_repo_and_chunk("./src", {"test_*.cpp", "generated.h"})
+    """
+    if ignore_files is None:
+        ignore_files = IGNORE_FILES
+
     all_chunks = []
+    num_folders = 0
+    total_files_processed = 0
+    total_files_skipped = 0
+
     for dirpath, _, files in os.walk(root_dir):
+        print(f"walk_and_chunk: {dirpath}, #{num_folders}")
+        num_folders += 1
         count = 0
+
         for name in files:
+            # Check if file should be ignored
+            if should_ignore_file(name, ignore_files):
+                print(f"\tSkipping ignored file: {name}")
+                total_files_skipped += 1
+                continue
+
+            # Check if it's a C/C++ file
             if os.path.splitext(name)[1].lower() in CPP_EXTS:
                 p = os.path.join(dirpath, name)
-                all_chunks.extend(extract_chunks_with_lizard(p))
-                count+=1
-                print(f"{count}/{len(files)} files chunked")
+                try:
+                    chunks = extract_chunks_with_lizard(p)
+                    all_chunks.extend(chunks)
+                    count += 1
+                    total_files_processed += 1
+                    print(f"\tFile: {name}, {count} files chunked in this folder ({len(chunks)} chunks)")
+                except Exception as e:
+                    print(f"\t[ERROR] Failed to process {name}: {e}")
+                    total_files_skipped += 1
+
+    print(f"\n=== Summary ===")
+    print(f"Folders processed: {num_folders}")
+    print(f"Files processed: {total_files_processed}")
+    print(f"Files skipped/ignored: {total_files_skipped}")
+    print(f"Total chunks extracted: {len(all_chunks)}")
+
     return all_chunks
 
 def get_existing_ids(collection):
@@ -216,7 +308,10 @@ def uniquify_records(records, already_seen: set):
 
 def prepare_records(chunks):
     """Yield records, splitting any text that exceeds MAX_ITEM_TOKENS."""
+    nrec = 0
     for c in chunks:
+        nrec += 1
+        print(f"prepare_record #{nrec} out of {len(chunks)}")
         base_id = c["id"]
         txt = c["text"]
         if token_len(txt) <= MAX_ITEM_TOKENS:
@@ -271,7 +366,8 @@ def embed_record_with_retry(record, already_seen: set):
     last_exc = None
     for attempt in range(1, MAX_EMBED_RETRIES + 1):
         try:
-            return embed_client.embed(text), None
+            embeds = embed_client.embed(text)
+            return embeds, None
         except httpx.HTTPStatusError as exc:  # type: ignore[attr-defined]
             last_exc = exc
             status = exc.response.status_code if exc.response is not None else None
@@ -281,10 +377,10 @@ def embed_record_with_retry(record, already_seen: set):
                     detail = exc.response.text.strip()
                 except Exception:
                     detail = ""
-            token_count = token_len(text)
-            print(f"[WARN] Embed HTTP {status} for {record['id']} (attempt {attempt}/{MAX_EMBED_RETRIES}, tokens={token_count}).")
-            if detail:
-                print(f"       Detail: {detail[:200]}")
+ #           token_count = token_len(text)
+ #           print(f"[WARN] Embed HTTP {status} for {record['id']} (attempt {attempt}/{MAX_EMBED_RETRIES}, tokens={token_count}).")
+ #           if detail:
+ #              print(f"       Detail: {detail[:200]}")
             if status in {429, 500, 502, 503, 504} or (status is not None and status >= 500):
                 time.sleep(min(delay, RETRY_MAX_DELAY))
                 delay = min(delay * 2, RETRY_MAX_DELAY)

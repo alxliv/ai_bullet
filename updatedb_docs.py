@@ -25,13 +25,13 @@ import math
 import json
 import hashlib
 import argparse
-import tiktoken
 from pypdf import PdfReader
 import docx
 from typing import List, Dict, Any, Iterable, Tuple, Optional
 from config import DOCUMENTS_PATH, SOURCES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
 from dotenv import load_dotenv
 from path_utils import encode_path
+from tokenizer_utils import count_tokens, split_by_tokens as split_by_tokens_util, encode as encode_tokens
 
 # ------------- Third-party deps -------------
 import chromadb
@@ -40,9 +40,11 @@ import httpx
 
 # ------------- Config defaults -------------
 EMBED_MODEL = EMBEDDING_MODEL
-MAX_ITEM_TOKENS = 7800                   # leave headroom under 8192
-MAX_REQUEST_TOKENS = 7800
-DEFAULT_BATCH_LIMIT = 7800               # sum of tokens per request
+# Optimized for Qwen3-4B (256K context window)
+# See TOKEN_LIMITS_GUIDE.md for rationale
+MAX_ITEM_TOKENS = 2048                   # Maximum tokens per chunk (balanced for RAG)
+MAX_REQUEST_TOKENS = 8192                # Maximum tokens per batch request
+DEFAULT_BATCH_LIMIT = 8192               # Sum of tokens per request
 SUPPORTED_EXTS = {".pdf", ".docx", ".md", ".markdown", ".txt"}  # add more if needed
 
 DOCUMENTS_FULL_PATH = os.path.expanduser(DOCUMENTS_PATH)
@@ -59,20 +61,22 @@ from retriever import OllamaEmbeddingClient
 embed_client = OllamaEmbeddingClient(OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL)
 
 
-_ENC = tiktoken.get_encoding("cl100k_base")
-
 def token_len(text: str) -> int:
-    if _ENC is None:
-        return math.ceil(len(text) / 4)  # rough fallback
-    return len(_ENC.encode(text))
+    """Count tokens using Qwen3 tokenizer."""
+    try:
+        return count_tokens(text)
+    except RuntimeError:
+        # Fallback to character-based estimation if tokenizer not available
+        return math.ceil(len(text) / 4)
 
 def split_by_tokens(text: str, max_tokens: int) -> List[str]:
-    if _ENC is None:
-        # naive split by chars
+    """Split text by tokens using Qwen3 tokenizer."""
+    try:
+        return split_by_tokens_util(text, max_tokens)
+    except RuntimeError:
+        # Fallback to character-based splitting if tokenizer not available
         step = max_tokens * 4
         return [text[i:i+step] for i in range(0, len(text), step)]
-    toks = _ENC.encode(text)
-    return [_ENC.decode(toks[i:i+max_tokens]) for i in range(0, len(toks), max_tokens)]
 
 # ------------- Hash / ID helpers -------------
 
@@ -114,7 +118,11 @@ def read_docx(path: str) -> str:
 
 def chunk_text_generic(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS, overlap_tokens: int = 100) -> Iterable[Dict[str, Any]]:
     """Token slide window for generic/plaintext content."""
-    toks = _ENC.encode(text) if _ENC else None
+    try:
+        toks = encode_tokens(text)
+    except RuntimeError:
+        toks = None
+
     if toks is None:
         # naive char-based fallback
         step = max_tokens * 4
@@ -135,9 +143,14 @@ def chunk_text_generic(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS, 
 
     step = max_tokens
     ov   = overlap_tokens
+    from tokenizer_utils import decode
     for i in range(0, len(toks), step - ov):
         piece_toks = toks[i:i+step]
-        piece = _ENC.decode(piece_toks)
+        try:
+            piece = decode(piece_toks)
+        except RuntimeError:
+            # Fallback if decode fails
+            piece = text[i*4:(i+len(piece_toks))*4]
         cid = f"{path}:tok{i}-{i+len(piece_toks)}-{short_hash(piece)}"
         yield {
             "id": cid,
@@ -185,6 +198,7 @@ def chunk_pdf_pages(
     """
     for page_no, lines in pages:
         # slide over the page in windows of max_lines
+        print(f"Chunk pdf page {page_no} lines {len(lines)}")
         for i in range(0, len(lines), max_lines):
             block = lines[i : i + max_lines]
             text = "\n".join(block).strip()
@@ -293,6 +307,7 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
 # ------------- Main pipeline -------------
 
 def build_records_for_file(path: str) -> List[Dict[str, Any]]:
+    print(f"Building records for {path}")
     ext = os.path.splitext(path)[1].lower()
     try:
         if ext in (".md", ".markdown"):
@@ -324,6 +339,7 @@ def walk_docs(root_dir: str) -> List[Dict[str, Any]]:
             if os.path.splitext(name)[1].lower() in SUPPORTED_EXTS:
                 p = os.path.join(dirpath, name)
                 recs = build_records_for_file(p)
+                print(f"Adding #{len(recs)} records of file {name}")
                 all_records.extend(recs)
     return all_records
 
@@ -335,7 +351,7 @@ def main():
     col = client.get_or_create_collection(name="bullet_docs")
 
     records = walk_docs(DOCUMENTS_FULL_PATH)
-    print(f"Found {len(records)} candidate chunks")
+    print(f"Found {len(records)} records in total")
 
     # De-dup vs existing
     existing = get_all_ids(col)
