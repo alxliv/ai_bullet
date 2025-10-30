@@ -125,9 +125,14 @@ class RetrieverConfig:
         ),
         user_template: str = (
             "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
-            "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](full path to the file) : page,line-range).\n"
-            "Example: [btMotionState.h](/src/LinearMath/btMotionState.h).\n"
-            "Never give references (URL) to any source outside - that is those who start with http: or https:"
+            "Please answer using markdown, show code in fenced blocks.\n\n"
+            "IMPORTANT - Citation Format Rules:\n"
+            "- ALWAYS cite sources using markdown link syntax: [filename](path) : line-range\n"
+            "- CORRECT format: Source: [DeformableMultibody.cpp](/examples/DeformableDemo/DeformableMultibody.cpp) : 39-42\n"
+            "- INCORRECT format: Source: `/examples/file.cpp` : 39-42 (DO NOT use backticks)\n"
+            "- INCORRECT format: Source: /examples/file.cpp : 39-42 (DO NOT use plain text paths)\n"
+            "- File paths must be clickable markdown links enclosed in [text](path) syntax.\n"
+            "- Never give references (URL) to any source outside - that is those who start with http: or https:\n"
         ),
         use_llm_rerank: bool = False,
         llm_rerank_model: str = "gpt-3.5-turbo",
