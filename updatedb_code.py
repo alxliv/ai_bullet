@@ -201,7 +201,7 @@ def should_ignore_file(filename: str, ignore_patterns) -> bool:
     return False
 
 
-def walk_repo_and_chunk(root_dir, ignore_files=None):
+def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
     """
     Walk directory tree and extract code chunks from C/C++ files.
 
@@ -217,16 +217,13 @@ def walk_repo_and_chunk(root_dir, ignore_files=None):
     Examples:
         >>> chunks = walk_repo_and_chunk("./src", {"test_*.cpp", "generated.h"})
     """
-    if ignore_files is None:
-        ignore_files = IGNORE_FILES
-
     all_chunks = []
     num_folders = 0
     total_files_processed = 0
     total_files_skipped = 0
 
     for dirpath, _, files in os.walk(root_dir):
-        print(f"walk_and_chunk: {dirpath}, #{num_folders}")
+        print(f"#{num_folders}. walk_repo_and_chunk() path={dirpath}")
         num_folders += 1
         count = 0
 
