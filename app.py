@@ -371,7 +371,10 @@ def save_response(session_id: str, model: str, user_message: str, assistant_mess
     else:
         session_messages.append({"role": "user", "content": user_message})
 
+    timestamp = datetime.now().strftime("%d_%b_%Y_%H_%M_%S")
+
     session_messages.append({
+        "timestamp": timestamp,
         "role": "assistant",
         "model": model,
         "use_full_knowledge": use_full_knowledge,
@@ -608,7 +611,8 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
         )
 
     # record user turn
-    session_data["messages"].append({"role": "user", "content": request.message})
+    timestamp = datetime.now().strftime("%d_%b_%Y_%H_%M_%S")
+    session_data["messages"].append({"timestamp": timestamp, "role": "user", "content": request.message})
 
     logger.info(f"Chat request: model={request.model}, message_length={len(request.message)}, use_full_knowledge={request.use_full_knowledge}")
 
