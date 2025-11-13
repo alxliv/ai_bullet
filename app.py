@@ -30,7 +30,7 @@ from path_utils import DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
-version = "0.1.7"
+version = "0.1.8"
 title="AI Bullet: AI-Powered Q & A"
 
 logger = setup_logger()

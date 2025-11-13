@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
+from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL, IGNORE_FILES
 from path_utils import encode_path
 
 from openai import OpenAI
@@ -143,16 +143,69 @@ def extract_chunks_with_lizard(path, include_comments=True):
 
     return chunks
 
-def walk_repo_and_chunk(root_dir):
+def should_ignore_file(filename: str, ignore_patterns) -> bool:
+    """
+    Check if a file should be ignored based on ignore rules.
+
+    Args:
+        filename: Name of the file to check
+        ignore_patterns: Set or iterable of ignore patterns (exact names or wildcards)
+
+    Returns:
+        True if file should be ignored, False otherwise
+
+    Examples:
+        >>> should_ignore_file("test.cpp", {"test.cpp"})
+        True
+        >>> should_ignore_file("landscapeData.h", {"landscapeData.h"})
+        True
+        >>> should_ignore_file("test_main.cpp", {"test_*.cpp"})
+        True
+    """
+    import fnmatch
+
+    if not ignore_patterns:
+        return False
+
+    # Check exact match first (faster)
+    if filename in ignore_patterns:
+        return True
+
+    # Check wildcard patterns
+    for pattern in ignore_patterns:
+        if '*' in pattern or '?' in pattern:
+            if fnmatch.fnmatch(filename, pattern):
+                return True
+    return False
+
+def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
     all_chunks = []
+    num_folders = 0
+    total_files_processed = 0
+    total_files_skipped = 0
     for dirpath, _, files in os.walk(root_dir):
+        print(f"#{num_folders}. walk_repo_and_chunk() path={dirpath}")
+        num_folders +=1
         count = 0
         for name in files:
+            # Check if file should be ignored
+            if should_ignore_file(name, ignore_files):
+                print(f"\tSkipping ignored file: {name}")
+                total_files_skipped += 1
+                continue
             if os.path.splitext(name)[1].lower() in CPP_EXTS:
                 p = os.path.join(dirpath, name)
-                all_chunks.extend(extract_chunks_with_lizard(p))
+                chunks = extract_chunks_with_lizard(p)
+                all_chunks.extend(chunks)
                 count+=1
-                print(f"{count}/{len(files)} files chunked")
+                total_files_processed += 1
+                print(f"\tFile: {name}, {count} files chunked in this folder ({len(chunks)} chunks)")
+
+    print(f"\n=== Summary ===")
+    print(f"Folders processed: {num_folders}")
+    print(f"Files processed: {total_files_processed}")
+    print(f"Files skipped/ignored: {total_files_skipped}")
+    print(f"Total chunks extracted: {len(all_chunks)}")
     return all_chunks
 
 all_chunks = walk_repo_and_chunk(SOURCES_FULL_PATH)
