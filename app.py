@@ -160,13 +160,17 @@ app = FastAPI(
 )
 
 # CORS: configure for prod via ALLOWED_ORIGINS env (comma-separated)
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
-if not ALLOWED_ORIGINS:
-    ALLOWED_ORIGINS = ["http://localhost:8000", "http://127.0.0.1:8000"]
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
+if ALLOWED_ORIGINS == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
+    if not allow_origins:
+        allow_origins = ["http://localhost:8000", "http://127.0.0.1:8000"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=allow_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept", "Cache-Control", "X-Requested-With"],

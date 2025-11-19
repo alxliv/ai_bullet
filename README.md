@@ -2,6 +2,10 @@
 
 A versatile Retrieval-Augmented Generation (RAG) chatbot designed to document and answer questions about **any software project** that include source files and document collection of various types.
 The [Bullet3 library](https://github.com/bulletphysics/bullet3) was used as a `testbed` - as an example and for a demo.
+[!IMPORTANT]
+Remember to copy config_win.py (or config_posix.py) to **_config.py_** and .env_example to **_.env_**. And modify those as needed for your setup.
+[!NOTE]
+I used **python 3.10.8** during development.
 
 ## Project Goals
 
