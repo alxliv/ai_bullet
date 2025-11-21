@@ -1,0 +1,206 @@
+"""
+updatedb_helper.py
+==================
+
+Shared utilities for updatedb_docs.py and updatedb_code.py.
+Provides robust embedding with retry logic, exponential backoff, and automatic splitting.
+"""
+
+import time
+import httpx
+from typing import Dict, Any, List, Tuple, Optional, Set
+from tokenizer_utils import count_tokens, split_by_tokens
+from collections import defaultdict
+import hashlib
+
+# Retry configuration
+MAX_EMBED_RETRIES = 3
+RETRY_INITIAL_DELAY = 0.2  # seconds
+RETRY_MAX_DELAY = 5.0      # seconds
+MIN_RETRY_TOKENS = 512     # Minimum tokens before we try splitting
+
+
+def token_len(txt: str) -> int:
+    """Count tokens using tokenizer."""
+    try:
+        return count_tokens(txt)
+    except RuntimeError:
+        # Fallback to character-based estimation if tokenizer not available
+        return len(txt) // 4
+
+
+def short_hash(text: str, length: int = 8) -> str:
+    """Generate short hash for ID generation."""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()[:length]
+
+
+def uniquify_records(records: List[Dict[str, Any]], already_seen: Set[str]) -> List[Dict[str, Any]]:
+    """
+    Ensure every record has a unique ID.
+
+    - If ID is free: keep it
+    - If ID collides but text is identical: skip (already have it)
+    - If ID collides and text differs: rename with '#dup{n}-{hash}'
+
+    Args:
+        records: List of records with 'id' and 'text' keys
+        already_seen: Set of IDs already in ChromaDB (will be updated)
+
+    Returns:
+        List of unique records
+    """
+    seen_text_by_id = {}
+    out = []
+    dup_counters = defaultdict(int)
+
+    for r in records:
+        rid, txt = r["id"], r["text"]
+
+        if rid in already_seen:
+            # Already stored in ChromaDB - skip
+            continue
+
+        if rid in seen_text_by_id:
+            if seen_text_by_id[rid] == txt:
+                # Exact duplicate in this batch - skip
+                continue
+            # Different text but same ID - rename
+            dup_counters[rid] += 1
+            new_id = f"{rid}#dup{dup_counters[rid]}-{short_hash(txt)}"
+            r = r.copy()
+            r["id"] = new_id
+            rid = new_id
+
+        seen_text_by_id[rid] = txt
+        already_seen.add(rid)
+        out.append(r)
+
+    return out
+
+
+def make_retry_splits(
+    record: Dict[str, Any],
+    already_seen: Set[str],
+    target_tokens: int
+) -> List[Dict[str, Any]]:
+    """
+    Split a record into smaller pieces for retry purposes.
+
+    Args:
+        record: The record to split
+        already_seen: Set of IDs already used (to avoid duplicates)
+        target_tokens: Target token count per split
+
+    Returns:
+        List of split records
+    """
+    text = record["text"]
+    pieces = split_by_tokens(text, target_tokens)
+
+    splits = []
+    for i, piece in enumerate(pieces):
+        new_id = f"{record['id']}#split{i}_{short_hash(piece)}"
+        if new_id in already_seen:
+            continue
+        already_seen.add(new_id)
+
+        new_record = record.copy()
+        new_record["id"] = new_id
+        new_record["text"] = piece
+        splits.append(new_record)
+
+    return splits
+
+
+def embed_record_with_retry(
+    record: Dict[str, Any],
+    embed_client,
+    already_seen: Set[str],
+    max_item_tokens: int,
+    verbose: bool = True
+) -> Tuple[Optional[List[float]], Optional[List[Dict[str, Any]]]]:
+    """
+    Try to embed a record with retry logic for transient failures.
+
+    Features:
+    - Exponential backoff for rate limits and server errors
+    - Network error handling
+    - Automatic splitting after retries exhausted
+
+    Args:
+        record: Record to embed (must have 'id' and 'text' keys)
+        embed_client: Client with embed() method
+        already_seen: Set of IDs already processed
+        max_item_tokens: Maximum tokens per item before splitting
+        verbose: Whether to print warnings
+
+    Returns:
+        (embedding, None) on success
+        (None, new_records) when caller should process the splits instead
+
+    Raises:
+        Exception if all retries fail and splitting is not possible
+    """
+    text = record["text"]
+    delay = RETRY_INITIAL_DELAY
+    last_exc = None
+
+    for attempt in range(1, MAX_EMBED_RETRIES + 1):
+        try:
+            embedding = embed_client.embed(text)
+            return embedding, None
+
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            status = exc.response.status_code if exc.response is not None else None
+
+            # Get error details for logging
+            detail = ""
+            if exc.response is not None:
+                try:
+                    detail = exc.response.text.strip()
+                except Exception:
+                    detail = ""
+
+            if verbose and attempt == 1:
+                token_count = token_len(text)
+                print(f"[WARN] Embed HTTP {status} for {record['id']} (attempt {attempt}/{MAX_EMBED_RETRIES}, tokens={token_count})")
+                if detail and len(detail) < 200:
+                    print(f"       Detail: {detail}")
+
+            # Retry on transient errors
+            if status in {429, 500, 502, 503, 504} or (status is not None and status >= 500):
+                if verbose and attempt > 1:
+                    print(f"[RETRY] Attempt {attempt}/{MAX_EMBED_RETRIES} for {record['id']}")
+                time.sleep(min(delay, RETRY_MAX_DELAY))
+                delay = min(delay * 2, RETRY_MAX_DELAY)
+                continue
+
+            # Non-retryable error (e.g., 400, 413)
+            raise
+
+        except httpx.RequestError as exc:
+            # Network issues, timeouts, connection errors
+            last_exc = exc
+            if verbose:
+                print(f"[WARN] Network error for {record['id']} on attempt {attempt}/{MAX_EMBED_RETRIES}: {exc}")
+            time.sleep(min(delay, RETRY_MAX_DELAY))
+            delay = min(delay * 2, RETRY_MAX_DELAY)
+
+    # All retries exhausted - try splitting if text is large enough
+    tokens = token_len(text)
+    if tokens > MIN_RETRY_TOKENS:
+        target = max(MIN_RETRY_TOKENS, min(max_item_tokens, max(tokens // 2, MIN_RETRY_TOKENS)))
+        splits = make_retry_splits(record, already_seen, target)
+
+        if splits:
+            if verbose:
+                print(f"[INFO] Splitting record {record['id']} into {len(splits)} pieces after {MAX_EMBED_RETRIES} failed attempts")
+            return None, splits
+
+    # Cannot split or splitting didn't help
+    error_msg = f"Embedding failed for {record['id']} after {MAX_EMBED_RETRIES} attempts"
+    if last_exc:
+        raise last_exc
+    else:
+        raise RuntimeError(error_msg)

@@ -15,44 +15,22 @@ Supported variables:
 Example:
     # Encoding (when storing to DB)
     abs_path = "D:/Work22/bullet3/docs/manual.pdf"
-    encoded = encode_path(abs_path)  # Returns "{DOCS}/manual.pdf"
+    encoded = encode_path(abs_path)  # Returns "docs/manual.pdf"
 
-    # Decoding (when retrieving from DB)
-    encoded = "{DOCS}/manual.pdf"
-    abs_path = decode_path(encoded)  # Returns "D:/Work22/bullet3/docs/manual.pdf" on Windows
 """
 
 import os
-from pathlib import Path, PurePosixPath
-from typing import Optional
-from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH
+from config import GLOBAL_RAGDATA_MAP
 
-# Expand user paths and normalize
-DOCS_ROOT = os.path.normpath(os.path.expanduser(DOCUMENTS_PATH))
-SRC_ROOT = os.path.normpath(os.path.expanduser(SOURCES_PATH))
-EXAMPLES_ROOT = os.path.normpath(os.path.expanduser(EXAMPLES_PATH))
+def _normalize_root(path: str) -> str:
+    """Expand ~ and collapse separators for consistent comparisons."""
+    return os.path.normpath(os.path.expanduser(path))
 
-# Path variable mapping for encoding (absolute -> variable)
+# Build variable mappings dynamically from GLOBAL_RAGDATA_MAP
 PATH_VARIABLES = {
-    DOCS_ROOT: "{DOCS}",
-    SRC_ROOT: "{SRC}",
-    EXAMPLES_ROOT: "{EXAMPLES}",
+    _normalize_root(path): f"/{key.lower()}"
+    for key, (path, _) in GLOBAL_RAGDATA_MAP.items()
 }
-
-# Reverse mapping for decoding (variable -> absolute)
-VARIABLE_TO_PATH = {
-    "{DOCS}": DOCS_ROOT,
-    "{SRC}": SRC_ROOT,
-    "{EXAMPLES}": EXAMPLES_ROOT,
-}
-
-# Legacy path variables (for migration support)
-LEGACY_VARIABLES = {
-    "$DOCS$": "{DOCS}",
-    "$SRC$": "{SRC}",
-    "$EXAMPLES$": "{EXAMPLES}",
-}
-
 
 def encode_path(absolute_path: str) -> str:
     """
@@ -94,170 +72,3 @@ def encode_path(absolute_path: str) -> str:
     return absolute_path
 
 
-def decode_path(encoded_path: str) -> str:
-    """
-    Convert a variable-based path back to an absolute file path for the current OS.
-
-    Args:
-        encoded_path: Encoded path with variable prefix (e.g., "{DOCS}/manual.pdf")
-
-    Returns:
-        Absolute file path for current OS (e.g., "D:/Work22/bullet3/docs/manual.pdf")
-        If no variable prefix found, returns the original path unchanged.
-
-    Note:
-        Also supports legacy $VAR$ format for backward compatibility.
-    """
-    # Check if path starts with any known variable (current format)
-    for variable, root in VARIABLE_TO_PATH.items():
-        if encoded_path.startswith(variable + "/"):
-            # Extract relative part (after variable and /)
-            rel_part = encoded_path[len(variable) + 1:]
-            # Convert to OS-specific path separator
-            rel_path = rel_part.replace('/', os.sep)
-            # Join with root
-            return os.path.join(root, rel_path)
-
-    # Check for legacy $VAR$ format
-    for legacy_var, new_var in LEGACY_VARIABLES.items():
-        if encoded_path.startswith(legacy_var + "/"):
-            # Extract relative part
-            rel_part = encoded_path[len(legacy_var) + 1:]
-            # Convert to OS-specific path separator
-            rel_path = rel_part.replace('/', os.sep)
-            # Get the root from the new variable
-            root = VARIABLE_TO_PATH[new_var]
-            return os.path.join(root, rel_path)
-
-    # No variable found - return as-is
-    return encoded_path
-
-
-def is_encoded_path(path: str) -> bool:
-    """
-    Check if a path uses variable-based encoding.
-
-    Args:
-        path: Path string to check
-
-    Returns:
-        True if path starts with a known variable ({DOCS}, {SRC}, {EXAMPLES})
-        or legacy format ($DOCS$, $SRC$, $EXAMPLES$)
-    """
-    # Check current format
-    if any(path.startswith(var + "/") for var in VARIABLE_TO_PATH.keys()):
-        return True
-    # Check legacy format
-    return any(path.startswith(var + "/") for var in LEGACY_VARIABLES.keys())
-
-
-def get_path_variable(absolute_path: str) -> Optional[str]:
-    """
-    Get the path variable that matches an absolute path.
-
-    Args:
-        absolute_path: Absolute file path
-
-    Returns:
-        Path variable (e.g., "{DOCS}") or None if no match
-    """
-    norm_path = os.path.normpath(absolute_path)
-
-    sorted_roots = sorted(PATH_VARIABLES.items(), key=lambda x: len(x[0]), reverse=True)
-
-    for root, variable in sorted_roots:
-        try:
-            common = os.path.commonpath([norm_path, root])
-            if os.path.normpath(common) == os.path.normpath(root):
-                return variable
-        except ValueError:
-            continue
-
-    return None
-
-
-def path_to_web_url(absolute_path: str) -> str:
-    """
-    Convert an absolute file path to a web-accessible URL path.
-
-    Args:
-        absolute_path: Absolute file path (e.g., "D:/Work22/bullet3/docs/manual.pdf")
-
-    Returns:
-        Web URL path (e.g., "/docs/manual.pdf")
-        If path doesn't match any known root, returns the original path unchanged.
-
-    Example:
-        >>> path_to_web_url("D:/Work22/bullet3/docs/Bullet_User_Manual.pdf")
-        "/docs/Bullet_User_Manual.pdf"
-        >>> path_to_web_url("D:/Work22/bullet3/src/BulletDynamics/Dynamics/btRigidBody.cpp")
-        "/src/BulletDynamics/Dynamics/btRigidBody.cpp"
-    """
-    # Normalize the input path
-    norm_path = os.path.normpath(absolute_path)
-
-    # Mapping from root paths to web mount points
-    web_mounts = {
-        DOCS_ROOT: "/docs",
-        SRC_ROOT: "/src",
-        EXAMPLES_ROOT: "/examples",
-    }
-
-    # Try to match against known roots (longest match first)
-    sorted_roots = sorted(web_mounts.items(), key=lambda x: len(x[0]), reverse=True)
-
-    for root, mount_point in sorted_roots:
-        # Check if path starts with this root
-        try:
-            common = os.path.commonpath([norm_path, root])
-            if os.path.normpath(common) == os.path.normpath(root):
-                # Extract relative part
-                rel_path = os.path.relpath(norm_path, root)
-                # Convert to forward slashes for URL (POSIX-style)
-                posix_rel = rel_path.replace(os.sep, '/')
-                return f"{mount_point}/{posix_rel}"
-        except ValueError:
-            # Paths are on different drives (Windows) - skip
-            continue
-
-    # No match found - return original path
-    return absolute_path
-
-
-# Convenience function for migration scripts
-def migrate_metadata_paths(metadata: dict) -> dict:
-    """
-    Update file_path in metadata dict from absolute to encoded format.
-
-    Args:
-        metadata: Metadata dict containing 'file_path' key
-
-    Returns:
-        Updated metadata dict with encoded path
-    """
-    if "file_path" in metadata:
-        metadata["file_path"] = encode_path(metadata["file_path"])
-    return metadata
-
-
-if __name__ == "__main__":
-    # Simple test/demo
-    print("Path Encoding/Decoding Demo")
-    print("=" * 50)
-
-    test_paths = [
-        os.path.join(DOCS_ROOT, "manual.pdf"),
-        os.path.join(SRC_ROOT, "btRigidBody.cpp"),
-        os.path.join(EXAMPLES_ROOT, "HelloWorld", "main.cpp"),
-        "/some/random/path.txt",
-    ]
-
-    for path in test_paths:
-        encoded = encode_path(path)
-        decoded = decode_path(encoded)
-        match = "OK" if os.path.normpath(decoded) == os.path.normpath(path) else "FAIL"
-
-        print(f"\nOriginal:  {path}")
-        print(f"Encoded:   {encoded}")
-        print(f"Decoded:   {decoded}")
-        print(f"Match:     {match}")

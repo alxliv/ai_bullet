@@ -67,7 +67,7 @@ def list_collections_simple():
             try:
                 count = collection.count()
                 print(f"{idx}. {collection.name}")
-                print(f"   └─ Documents: {count:,}")
+                print(f"   └─ Records: {count:,}")
             except Exception as e:
                 print(f"{idx}. {collection.name}")
                 print(f"   └─ Error getting count: {e}")
@@ -95,19 +95,19 @@ def remove_collection_simple(collection_name, force=False):
         print(f"\nAvailable collections: {', '.join(collection_names)}")
         return False
 
-    # Get document count for confirmation
+    # Get records count for confirmation
     try:
         collection = client.get_collection(collection_name)
         count = collection.count()
     except Exception as e:
-        print(f"Warning: Could not get document count: {e}")
+        print(f"Warning: Could not get records count: {e}")
         count = "unknown"
 
     # Confirmation
     if not force:
         print(f"\n⚠️  WARNING: About to delete collection '{collection_name}'")
         if count != "unknown":
-            print(f"   This collection contains {count:,} documents.")
+            print(f"   This collection contains {count:,} records.")
         print(f"   This action cannot be undone!\n")
 
         response = input("Proceed? (yes/no): ").strip().lower()
@@ -119,7 +119,7 @@ def remove_collection_simple(collection_name, force=False):
     try:
         client.delete_collection(collection_name)
         if count != "unknown":
-            print(f"\n✓ Successfully deleted collection '{collection_name}' ({count:,} documents)")
+            print(f"\n✓ Successfully deleted collection '{collection_name}' ({count:,} records)")
         else:
             print(f"\n✓ Successfully deleted collection '{collection_name}'")
         return True
@@ -170,12 +170,12 @@ def show_info():
                 try:
                     count = collection.count()
                     total_docs += count
-                    print(f"  - {collection.name}: {count:,} documents")
+                    print(f"  - {collection.name}: {count:,} records")
                 except Exception as e:
                     print(f"  - {collection.name}: Error getting count")
 
             if total_docs > 0:
-                print(f"\nTotal documents: {total_docs:,}")
+                print(f"\nTotal records: {total_docs:,}")
     except Exception as e:
         print(f"Error accessing collections: {e}")
 

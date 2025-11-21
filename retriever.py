@@ -3,11 +3,11 @@ retriever.py
 --------------
 
 Query -> retrieve from multiple Chroma collections (e.g. "cpp_code" and "bullet_docs")
--> fuse results -> build a prompt/context block for an OpenAI chat model.
+-> fuse results -> build a prompt/context block for a local chat model.
 
 Features
 =========
-- Single embedding of the query (OpenAI embeddings API).
+- Single embedding of the query (local embedding model via Ollama).
 - Retrieve from any number of Chroma collections.
 - Reciprocal Rank Fusion (RRF) to merge ranked lists.
 - Optional Maximal Marginal Relevance (MMR) diversification step.
@@ -33,28 +33,33 @@ Usage
     ctx, sources = r.build_context(hits)
     messages = r.build_messages(query="How is the constraint solver implemented?", context=ctx)
 
-    # send `messages` to OpenAI Chat Completions
+    # send `messages` to the chat model
 
 """
 from __future__ import annotations
 
 import os
 import json
-import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-import tiktoken  # type: ignore
-from openai import OpenAI
-from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
+
+import httpx
 import chromadb
 from chromadb.api.models.Collection import Collection as ChromaCollection
 from dotenv import load_dotenv
-from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL
 
-CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
+from config import CHROMA_DB_DIR, EMBEDDING_MODEL, OLLAMA_BASE_URL, LLM_DEFAULT_MODEL, USE_OPENAI, CHROMA_DB_FULL_PATH
 
-load_dotenv()
+if USE_OPENAI:
+    from openai import OpenAI
+    from openai.types.chat import ChatCompletionMessageParam
+else:
+    OpenAI = None  # type: ignore[assignment]
+    ChatCompletionMessageParam = Dict[str, Any]  # type: ignore[misc]
+
+from tokenizer_utils import count_tokens as token_len_func, truncate as truncate_text
+from embed_client import EmbedClientUni
 
 # ----------------------------
 # Data structures
@@ -68,7 +73,7 @@ class RetrieverConfig:
         rrf_b: int = 60,
         mmr_lambda: float = 0.5,
         use_mmr: bool = True,
-        max_context_tokens: int = 6000,
+        max_context_tokens: int = 16000,  # Optimized for Qwen3-4B (256K context)
         max_snippets: int = 12,
         code_lang_key: str = "node_type",
         code_lang_values: Sequence[str] = ("function", "leftover_block"),
@@ -82,20 +87,32 @@ class RetrieverConfig:
             "Use only the given CONTEXT to answer. If unsure, say you don't know. "
             "Format your responses in markdown. To render mathematical expressions and formulas, use LaTeX math notation."
             "Use $ ... $ for inline math or $$ ... $$ for block math."
-            "Cite sources by file path, page number and line numbers when available."
+            "Cite sources by file path, page number and line numbers when available.\n\n"
+            "IMPORTANT - Citation Format Rules:\n"
+            "- ALWAYS cite sources using markdown link syntax: [filename](path) : line-range\n"
+            "- CORRECT format: Source: [DeformableMultibody.cpp](/examples/DeformableDemo/DeformableMultibody.cpp) : 39-42\n"
         ),
         system_template_full: str = (
             "You are a precise assistant for C/C++ code and project documentation. "
-            "Use all your knowledge including Internet search to answer."
+            "Use all of your knowledge to answer."
             "Format your responses in markdown. To render mathematical expressions and formulas, use LaTeX math notation."
             "Use $ ... $ for inline math or $$ ... $$ for block math."
-            "Cite sources by file path, page number and line numbers when available."
+            "Cite sources by file path, page number and line numbers when available.\n\n"
+            "IMPORTANT - Citation Format Rules:\n"
+            "- ALWAYS cite sources using markdown link syntax: [filename](path) : line-range\n"
+            "- CORRECT format: Source: [DeformableMultibody.cpp](/examples/DeformableDemo/DeformableMultibody.cpp) : 39-42\n"
+
         ),
         user_template: str = (
             "QUESTION:\n{query}\n\nCONTEXT:\n{context}\n\n"
-            "Please answer using markdown, show code in fenced blocks, and include citations also in markdown format like (Source: [file name](full path to the file) : page,line-range).\n"
-            "Example: [btMotionState.h](/src/LinearMath/btMotionState.h).\n"
-            "Never give references (URL) to any source outside - that is those who start with http: or https:"
+            "Please answer using markdown, show code in fenced blocks.\n\n"
+            "IMPORTANT - Citation Format Rules:\n"
+            "- ALWAYS cite sources using markdown link syntax: [filename](path) : line-range\n"
+            "- CORRECT format: Source: [DeformableMultibody.cpp](/examples/DeformableDemo/DeformableMultibody.cpp) : 39-42\n"
+            "- INCORRECT format: Source: `/examples/file.cpp` : 39-42 (DO NOT use backticks)\n"
+            "- INCORRECT format: Source: /examples/file.cpp : 39-42 (DO NOT use plain text paths)\n"
+            "- File paths must be clickable markdown links enclosed in [text](path) syntax.\n"
+            "- Never give references (URL) to any source outside - that is those who start with http: or https:\n"
         ),
         use_llm_rerank: bool = False,
         llm_rerank_model: str = "gpt-3.5-turbo",
@@ -181,12 +198,27 @@ class Hit:
 # ----------------------------
 
 def _token_len(text: str, model: str = "cl100k_base") -> int:
-    enc = tiktoken.get_encoding(model)
-    return len(enc.encode(text))
+    """Count tokens using Qwen3 tokenizer (model parameter ignored for compatibility)."""
+    return token_len_func(text)
 
 
 def _cosine_to_similarity(distance: float) -> float:
-    return 1.0 - distance
+    """
+    Convert distance to similarity score (0-1 range).
+
+    Handles both cosine distance (0-2 range) and L2 distance (unbounded).
+    For L2 distances, uses exponential decay to map to 0-1 range.
+    """
+    if distance < 2.0:
+        # Assume cosine distance (typical range 0-1 for normalized vectors)
+        return 1.0 - distance
+    else:
+        # L2 distance - use exponential decay
+        # Adjust scale factor based on your embedding dimensions
+        # For 768-dim vectors, scale=50 works well
+        # For 1536-dim vectors, try scale=70
+        scale = 50.0
+        return max(0.0, 1.0 / (1.0 + (distance / scale)))
 
 
 def reciprocal_rank_fusion(list_of_lists: Sequence[Sequence[Hit]], b: int = 60) -> List[Hit]:
@@ -251,26 +283,35 @@ class Retriever:
         self,
         collections: Mapping[str, ChromaCollection],
         config: Optional[RetrieverConfig] = None,
-        openai_client: Optional[OpenAI] = None,
+        embedding_client: Optional[EmbedClientUni] = None,
     ) -> None:
         """
         collections: dict name -> chroma collection object
         """
         self.collections = dict(collections)
         self.cfg = config or RetrieverConfig()
-        self.oa = openai_client or OpenAI()
-        # try:
-        #     resp = self.oa.models.list()
-        #     print("Available models:")
-        #     for m in resp.data:
-        #         print(f"{m.id}")
-        # except Exception as e:
-        #     print(f"Error fetching models from OpenAI: {e}")
+        embed_model = self.cfg.embedding_model or EMBEDDING_MODEL
+        self.embedder = embedding_client or EmbedClientUni(
+            use_openai=USE_OPENAI,
+            embedding_model=embed_model,
+            ollama_base_url=OLLAMA_BASE_URL,
+            ollama_model=embed_model,
+        )
+        backend = "OpenAI" if USE_OPENAI else "Ollama"
+        print(f"Retriever initialized with {backend} embedding model: {embed_model}")
+        self._oa_client: Optional[Any] = None
 
     # --------- Embedding ---------
     def embed_query(self, query: str) -> List[float]:
-        resp = self.oa.embeddings.create(model=self.cfg.embedding_model, input=query)
-        return resp.data[0].embedding
+        return self.embedder.embed(query)
+
+    def _get_openai_client(self):
+        """Lazy init so rerank users only pay for OpenAI dependency when needed."""
+        if OpenAI is None:
+            raise RuntimeError("openai package is required when llm rerank is enabled")
+        if self._oa_client is None:
+            self._oa_client = OpenAI()
+        return self._oa_client
 
     # --------- Retrieval ---------
     def _query_one(self, name: str, col, q_emb: List[float], k: int) -> List[Hit]:
@@ -339,13 +380,13 @@ class Retriever:
             return []
 
         max_tok = getattr(cfg, 'llm_rerank_max_chunk_tokens', 512)
-        if tiktoken is not None:
-            enc_local = tiktoken.get_encoding("cl100k_base")
-            def _trunc(t: str) -> str:
-                toks = enc_local.encode(t)
-                return enc_local.decode(toks[:max_tok]) if len(toks) > max_tok else t
-        else:
-            def _trunc(t: str) -> str:
+
+        def _trunc(t: str) -> str:
+            try:
+                truncated, _ = truncate_text(t, max_tok)
+                return truncated
+            except RuntimeError:
+                # Fallback if tokenizer not available
                 return t[:max_tok*4]
 
         parts = []
@@ -360,7 +401,8 @@ class Retriever:
         )
         user_prompt = f"QUERY: {query} CHUNKS: {chunk_block}"
 
-        resp = self.oa.chat.completions.create(
+        client = self._get_openai_client()
+        resp = client.chat.completions.create(
             model=cfg.llm_rerank_model,
             messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_prompt}],
             temperature=0,
@@ -412,39 +454,52 @@ class Retriever:
 
         return "\n\n".join(context_parts), sources
 
-    def build_messages(self, query: str, context: str, use_full_knowledge=False) -> List[ChatCompletionSystemMessageParam]:
+    def build_messages(self, query: str, context: str, use_full_knowledge: bool = False) -> List[ChatCompletionMessageParam]:
         system_msg = self.cfg.system_template_full if use_full_knowledge else self.cfg.system_template
         user_msg = self.cfg.user_template.format(query=query, context=context)
-        messages = [
-            ChatCompletionSystemMessageParam(role="system", content=system_msg),
-            ChatCompletionUserMessageParam(role="user", content=user_msg)
+        messages: List[ChatCompletionMessageParam] = [
+            cast(ChatCompletionMessageParam, {"role": "system", "content": system_msg}),
+            cast(ChatCompletionMessageParam, {"role": "user", "content": user_msg}),
         ]
         return messages
 
-def ask_llm(query: str, retriever, model="gpt-4o-mini", use_full_knowledge=False, streaming=False):
+def ask_llm(query: str, retriever: Retriever, model: str = LLM_DEFAULT_MODEL, use_full_knowledge: bool = False):
     # 1) retrieve + build context
     hits = retriever.retrieve(query)
     ctx, sources = retriever.build_context(hits)
     messages = retriever.build_messages(query, ctx, use_full_knowledge)
 
-    # 2) call OpenAI
-    know_str='full knowledge' if use_full_knowledge else 'only context'
-    print(f"Calling OpenAI [{know_str}]...")
-    temperature = 1 if ("-mini" in model or "-nano" in model) else 0  # set 1 for mini/nano models, else 0
-
-    resp = retriever.oa.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=streaming,
-        temperature=temperature
-    )
-    if streaming:
-        print("Start stream from OpenAI")
-        return resp, sources
-    else:
+    if USE_OPENAI:
+        # 2) call OpenAI
+        know_str='full knowledge' if use_full_knowledge else 'only context'
+        print(f"Calling OpenAI [{know_str}]...")
+        temperature = 1 if ("-mini" in model or "-nano" in model) else 0  # set 1 for mini/nano models, else 0
+        oa = retriever._get_openai_client()
+        resp = oa.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=False,
+            temperature=temperature
+        )
         print("Got answer from OpenAI")
+        answer = resp.choices[0].message.content
+    else:
+        # 2) call Ollama
+        know_str='full knowledge' if use_full_knowledge else 'only context'
+        print(f"Calling Ollama [{know_str}]...")
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,  # Explicitly disable streaming
+        }
+        with httpx.Client(base_url=OLLAMA_BASE_URL, timeout=None) as client:
+            resp = client.post("/api/chat", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
 
-    answer = resp.choices[0].message.content
+        message = data.get("message") or {}
+        answer = message.get("content") or data.get("response", "")
+        print("Got answer from Ollama")
     return answer, sources
 
 
@@ -455,9 +510,7 @@ def create_retriever():
     client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
     all_collections = client.list_collections()
     print(f"All available collections in the DB: {[collection.name for collection in all_collections]}")
-    collections_names = ["cpp_code", "bullet_docs"]
-    cols = {name: client.get_collection(name) for name in collections_names}
-
+    cols = {c.name: c for c in all_collections}
     r = Retriever(cols, RetrieverConfig())
     return r
 
@@ -469,21 +522,6 @@ def _demo_cli():  # pragma: no cover
     print("_demo_cli()")
     retr = create_retriever()
 
-    #hits = retr.retrieve(args.query)
-    #context, sources = retr.build_context(hits)
-    #messages = retr.build_messages(args.query, context)
-
-    # print("\n--- SOURCES ---")
-    # for s in sources:
-    #     print(f"[{s['collection']}] {s['source']} (score={s['score']:.3f})")
-
-    # print("\n--- CONTEXT ---\n")
-    # print(context[:2000] + ("..." if len(context) > 2000 else ""))
-
-    # print("\n--- MESSAGES ---\n")
-    # for m in messages:
-    #     print(m["role"].upper()+":\n"+m["content"])
-    #     print()
     if args.query:
         q=args.query
     else:
@@ -506,10 +544,15 @@ def _demo_cli():  # pragma: no cover
 #        q = "Does Coriolis force is taken into account for bodies that fly around Earth?"
 #        q = "Explain struct LuaPhysicsSetup"
 #        q = "In stepSimulation() why we need to clamp the number of substeps?"
-#        q = "Describe DeformableDemo example"
+#       q = "Describe DeformableDemo example"
 #        q = "What is Jacobi solver?"
-        q = "Explain b3TestTriangleAgainstAabb2"
+#        q = "Explain b3TestTriangleAgainstAabb2"
 #        q = "What are Bullet Basic Data Types?"
+
+#        q = "How to solve several concurrent constraints?"
+#        q = "Explain position based dynamics"
+#        q = "Write vertex shader for per pixel lighting of a single omni plus ambient"
+        q = "What are some Helpful Lies about Our Universe?"
 
     print("\n--- Question: ---")
     print(q)
@@ -520,7 +563,7 @@ def _demo_cli():  # pragma: no cover
 
     print("\nSources:")
     for s in sources:
-        print(s["source"])
+        print(f'source={s["source"]}, score={s["score"]:.3f}')
 
 
 if __name__ == "__main__":  # pragma: no cover
