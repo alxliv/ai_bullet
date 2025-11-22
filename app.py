@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-OpenAI Chat Client with Math and Markdown Rendering
+LLM Chat Client with Math and Markdown Rendering
 
 A FastAPI application that provides a web interface for mathematical conversations
-with AI, featuring LaTeX rendering and streaming responses.
-
-Required packages: pip install fastapi uvicorn openai python-dotenv
+with AI, featuring LaTeX rendering, RAG context, and streaming responses.
 """
 import os, time, random, string, json, re
 import secrets
 
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Any, Union, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, status, Request, Depends, Query
@@ -21,17 +19,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
+import httpx
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 from my_logger import setup_logger;
 from retriever import create_retriever
-from path_utils import DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT
+from config import (
+    GLOBAL_RAGDATA_MAP,
+    QUERY_EXAMPLES,
+    LLM_DEFAULT_MODEL,
+    USE_OPENAI,
+    OLLAMA_BASE_URL,
+    OPENAI_BASE_URL,
+)
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
-version = "0.1.8"
-title="AI Bullet: AI-Powered Q & A"
+version = "0.2.2"
+title="AI-Powered Q & A"
 
 logger = setup_logger()
 # Example usage
@@ -43,35 +48,96 @@ logger = setup_logger()
 
 load_dotenv()
 
-AVAILABLE_MODELS = [
-    "gpt-4o-mini",
-    "gpt-4o",
-    "gpt-4-turbo",
-    "gpt-3.5-turbo",
-    "gpt-5-mini"
-]
-
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = LLM_DEFAULT_MODEL
+AVAILABLE_MODELS = [DEFAULT_MODEL]
 
 logger.info(f"Available models: {AVAILABLE_MODELS}")
-logger.info(f"Default model: {DEFAULT_MODEL}")
+logger.info(f"Default model: {LLM_DEFAULT_MODEL}")
 
-SYSTEM_PROMPT = (
-    "You are a helpful mathematics tutor. Use LaTeX notation for all "
-    "mathematical expressions. For inline math use $...$ and for display "
-    "math use $$...$$.  Provide clear, step-by-step explanations."
-)
 # Template configuration
 templates = Jinja2Templates(directory="web")
 HTML_FILE_PATH = Path("web") / "index.html"
 
 # Global client instance
-_openai_client: Optional[AsyncOpenAI] = None
+_llm_client: Optional[Union["OllamaChatClient", "OpenAIChatClient"]] = None
 
 retriever = create_retriever()
 
 # Add after the existing imports and before app = FastAPI()
 security = HTTPBasic()
+
+
+class OllamaChatClient:
+    """Thin async wrapper around the local Ollama HTTP API."""
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=None)
+
+    async def close(self) -> None:
+        """Tear down the underlying HTTP client."""
+        await self._client.aclose()
+
+    async def chat_stream(
+        self,
+        *,
+        model: str,
+        messages: Sequence[Any],
+        options: Optional[dict[str, Any]] = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Stream chat completions from Ollama.
+
+        Yields the raw JSON payloads delivered by Ollama's streaming API.
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+        }
+        if options:
+            payload["options"] = options
+
+        async with self._client.stream("POST", "/api/chat", json=payload) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.debug("Skipping non-JSON stream fragment from Ollama: %s", line)
+                    continue
+                yield data
+
+
+class OpenAIChatClient:
+    """Async wrapper for OpenAI chat completions with streaming support."""
+
+    def __init__(self, base_url: Optional[str] = None) -> None:
+        if base_url:
+            self._client: Any = AsyncOpenAI(base_url=base_url)
+        else:
+            self._client = AsyncOpenAI()
+
+    async def close(self) -> None:
+        await self._client.close()
+
+    async def chat_stream(
+        self,
+        *,
+        model: str,
+        messages: Sequence[Any],
+        **extra: Any,
+    ) -> AsyncGenerator[Any, None]:
+        stream = await self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=True,
+            **extra,
+        )
+        async for chunk in stream:
+            yield chunk
 
 def load_users_from_env():
     """Load users from environment variable"""
@@ -116,39 +182,53 @@ class Config:
 
     def __init__(self):
         load_dotenv()
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.use_openai = USE_OPENAI
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", OLLAMA_BASE_URL).rstrip("/")
+        self.openai_base_url = os.getenv("OPENAI_BASE_URL", OPENAI_BASE_URL).rstrip("/")
         self.host = os.getenv("HOST", "0.0.0.0")
         self.port = int(os.getenv("PORT", "8000"))
 
     @property
-    def has_openai_key(self) -> bool:
-        return bool(self.openai_api_key)
+    def has_ollama_endpoint(self) -> bool:
+        return bool(self.ollama_base_url)
+
+    @property
+    def has_openai_credentials(self) -> bool:
+        return bool(os.getenv("OPENAI_API_KEY"))
 
 
-def get_openai_client() -> Optional[AsyncOpenAI]:
-    """Get the OpenAI client instance"""
-    return _openai_client
+def get_llm_client() -> Optional[Union[OllamaChatClient, OpenAIChatClient]]:
+    """Return whichever LLM client has been configured for this deployment."""
+    return _llm_client
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Application lifespan manager"""
-    global _openai_client
+    global _llm_client
     config = Config()
 
-    # Initialize OpenAI client if API key is available
-    if config.has_openai_key:
-        _openai_client = AsyncOpenAI(api_key=config.openai_api_key)
-        logger.info("OpenAI client initialized")
-    else:
-        logger.warning("OpenAI API key not found - client not initialized")
+    try:
+        if config.use_openai:
+            if not config.has_openai_credentials:
+                raise RuntimeError("OPENAI_API_KEY not configured")
+            _llm_client = OpenAIChatClient(base_url=config.openai_base_url)
+            logger.info("OpenAI client initialized OK")
+        elif config.has_ollama_endpoint:
+            _llm_client = OllamaChatClient(config.ollama_base_url)
+            logger.info("Ollama client initialized at %s", config.ollama_base_url)
+        else:
+            raise RuntimeError("OLLAMA_BASE_URL not configured")
+    except Exception as exc:
+        _llm_client = None
+        logger.error("Failed to initialize LLM client: %s", exc)
 
     yield
 
     # Cleanup
-    if _openai_client:
-        await _openai_client.close()
-        logger.info("OpenAI client closed")
+    if _llm_client:
+        await _llm_client.close()
+        logger.info("LLM client closed")
 
 
 # Initialize FastAPI app with lifespan
@@ -171,7 +251,7 @@ else:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=False,
+    allow_credentials=False,  # Must be False when allow_origins=["*"]
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept", "Cache-Control", "X-Requested-With"],
     expose_headers=["Content-Type"],
@@ -185,16 +265,22 @@ if not ALLOWED_HOSTS:
 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
-# Path roots are now imported from path_utils (DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT)
-# Paths in ChromaDB are now stored using OS-agnostic variable encoding ($DOCS$, $SRC$, $EXAMPLES$)
-# and decoded at runtime using path_utils.decode_path()
-
-# Mount static files
+# Mount static files (web UI plus every configured RAG folder)
 app.mount("/static", StaticFiles(directory="web"), name="static")
 
-app.mount("/docs", StaticFiles(directory=DOCS_ROOT), name="docs")
-app.mount("/src", StaticFiles(directory=SRC_ROOT), name="src")
-app.mount("/examples", StaticFiles(directory=EXAMPLES_ROOT), name="examples")
+for name, (raw_path, _rag_type) in GLOBAL_RAGDATA_MAP.items():
+    fs_path = os.path.normpath(os.path.expanduser(raw_path))
+    if not os.path.isdir(fs_path):
+        logger.warning("Skipping mount for %s (%s not found)", name, fs_path)
+        continue
+
+    mount_path = f"/{name.lower()}"
+    try:
+        app.mount(mount_path, StaticFiles(directory=fs_path), name=name.lower())
+        print(f"app.mount({mount_path}, directory={fs_path}, name={name.lower()})")
+
+    except RuntimeError as exc:
+        logger.error("Failed to mount %s at %s: %s", fs_path, mount_path, exc)
 
 # _username and _session_id are globals for now, but will be replaced by proper user/session magagement later
 _username = "demo"
@@ -265,7 +351,7 @@ def get_or_create_session(
         now = datetime.now()
         user_sessions[session_id] = {
             "messages": [{"role": "system", "content": system_prompt}],
-            "model": current_model or DEFAULT_MODEL,
+            "model": current_model or LLM_DEFAULT_MODEL,
             "username": username,
             "save_path": save_path,
             "created_at": now,
@@ -374,9 +460,7 @@ def save_response(session_id: str, model: str, user_message: str, assistant_mess
         session_messages[-1]["content"] = user_message
     else:
         session_messages.append({"role": "user", "content": user_message})
-
     timestamp = datetime.now().strftime("%d_%b_%Y_%H_%M_%S")
-
     session_messages.append({
         "timestamp": timestamp,
         "role": "assistant",
@@ -399,7 +483,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="The user's message")
     model: str = Field(
         default=DEFAULT_MODEL,
-        description="OpenAI model to use for the response"
+        description="Ollama model to use for the response"
     )
     use_full_knowledge: bool = Field(
         default=False,
@@ -428,7 +512,7 @@ class StreamResponse(BaseModel):
 
 
 class ModelsResponse(BaseModel):
-    """Response model for available OpenAI models"""
+    """Response model for available Ollama models"""
     models: list[str] = Field(..., description="List of available models")
     default_model: str = Field(..., description="Default model to use")
 
@@ -452,17 +536,6 @@ async def index(
 
     user_messages = get_session_messages(session_id)
     chat_history = user_messages[-10:] if user_messages else []
-    examples = [
-        "Describe DeformableDemo",
-        "What value of timeStep is recommended for the integration?",
-        "What is the Jacobi solver implementation?",
-        "Explain btMotionState class definition",
-        "How does collision detection work in Bullet3?",
-        "Describe the constraint solver architecture",
-        "Explain struct LuaPhysicsSetup",
-        "How to compute the object AABBs?",
-        "What types of constraints are available in Bullet3 and how do I create a hinge joint?"
-    ]
 
     try:
         return templates.TemplateResponse("index.html", {
@@ -474,7 +547,7 @@ async def index(
             "selected_model": session_data["model"],
             "session_id": session_id,
             "username": username,
-            "example_questions": examples
+            "example_questions": QUERY_EXAMPLES
         })
     except Exception as e:
         logger.error(f"Error serving index page: {e}")
@@ -523,70 +596,145 @@ def complete_response(combined_content: str, model: str, message: str, session_i
 
     return normalized_content
 
-async def stream_openai_response(message: str, model: str, use_full_knowledge: bool = False, session_id: Optional[str] = None) -> AsyncGenerator[str, None]:
-    """Stream responses from OpenAI API using Server-Sent Events format"""
-    client = get_openai_client()
-
-    if not client:
-        error_response = ErrorResponse(error="OpenAI API key not configured")
-        yield f"data: {error_response.model_dump_json()}\n\n"
-        return
+async def stream_ollama_response(
+    message: str,
+    model: str,
+    client: OllamaChatClient,
+    use_full_knowledge: bool = False,
+    session_id: Optional[str] = None,
+) -> AsyncGenerator[str, None]:
+    """Stream responses from the local Ollama API using Server-Sent Events format."""
 
     try:
         hits = retriever.retrieve(message)
-        ctx, sources = retriever.build_context(hits)
+        ctx, _sources = retriever.build_context(hits)
         messages = retriever.build_messages(message, ctx, use_full_knowledge=use_full_knowledge)
 
-        # Use max_completion_tokens for GPT-5 models, max_tokens for others
-        token_param = "max_completion_tokens" if model.startswith("gpt-5") else "max_tokens"
-        max_tokens = 8000 if model.startswith("gpt-5") else 3000
-        stream_params = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-            token_param: max_tokens
-        }
-
-        stream = await client.chat.completions.create(**stream_params)
-
-        logger.info("Response stream opened.")
+        logger.info("Opening Ollama response stream for model %s", model)
         start_time = time.perf_counter()
-
-        # Accumulate all chunks into combined content
         combined_content = ""
 
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                content = chunk.choices[0].delta.content
+        temp = 1.0 if any(tag in model for tag in ("-mini", "-nano")) else 0.0
 
-                # Accumulate content from this chunk
-                combined_content += content
+        async for chunk in client.chat_stream(  # type: ignore[call-arg]
+            model=model,
+            messages=messages
+        ):
+            if chunk.get("error"):
+                raise RuntimeError(chunk["error"])
 
-                response = StreamResponse(content=content, error=None)
-                # await asyncio.sleep(0.2)  # Simulate network delay
+            content_piece = ""
+            if "message" in chunk:
+                content_piece = chunk["message"].get("content", "") or ""
+            elif "response" in chunk:
+                # Some Ollama versions stream under 'response'
+                content_piece = chunk.get("response") or ""
+
+            if content_piece:
+                combined_content += content_piece
+                response = StreamResponse(content=content_piece, error=None)
                 yield f"data: {response.model_dump_json()}\n\n"
 
-        # Call complete_response with the accumulated content
-        # This normalizes links and saves the response to the session
-        if combined_content:
-            normalized_content = complete_response(combined_content, model, message, session_id=session_id, use_full_knowledge=use_full_knowledge)
+            if chunk.get("done"):
+                break
 
-            # Send the final normalized content as a complete message
-            final_response = StreamResponse(content=f"\n\n[NORMALIZED_CONTENT]\n{normalized_content}", error=None)
+        if combined_content:
+            normalized_content = complete_response(
+                combined_content,
+                model,
+                message,
+                session_id=session_id,
+                use_full_knowledge=use_full_knowledge,
+            )
+            final_response = StreamResponse(
+                content=f"\n\n[NORMALIZED_CONTENT]\n{normalized_content}",
+                error=None,
+            )
             yield f"data: {final_response.model_dump_json()}\n\n"
 
         yield "data: [DONE]\n\n"
         elapsed_sec = time.perf_counter() - start_time
-        logger.info(f"Response streaming completed successfully in {elapsed_sec:.2f} sec")
+        logger.info("Response streaming completed in %.2f sec", elapsed_sec)
 
-    except Exception as e:
-        logger.error(f"OpenAI API error: {e}")
-        error_response = ErrorResponse(error=f"API error: {str(e)}")
+    except httpx.HTTPError as exc:
+        logger.error("Ollama HTTP error: %s", exc)
+        error_response = ErrorResponse(error=f"Ollama HTTP error: {exc}")
+        yield f"data: {error_response.model_dump_json()}\n\n"
+    except Exception as exc:
+        logger.error("Ollama streaming error: %s", exc)
+        error_response = ErrorResponse(error=f"Ollama error: {exc}")
+        yield f"data: {error_response.model_dump_json()}\n\n"
+
+
+async def stream_openai_response(
+    message: str,
+    model: str,
+    client: OpenAIChatClient,
+    use_full_knowledge: bool = False,
+    session_id: Optional[str] = None,
+) -> AsyncGenerator[str, None]:
+    """Stream responses from OpenAI chat completions via SSE."""
+
+    try:
+        hits = retriever.retrieve(message)
+        ctx, _sources = retriever.build_context(hits)
+        messages = retriever.build_messages(message, ctx, use_full_knowledge=use_full_knowledge)
+
+        logger.info("Opening OpenAI response stream for model %s", model)
+        start_time = time.perf_counter()
+        combined_content = ""
+
+        async for chunk in client.chat_stream(model=model, messages=messages):
+            chunk_content = ""
+            for choice in getattr(chunk, "choices", []) or []:
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                delta_content = getattr(delta, "content", None)
+                if isinstance(delta_content, str):
+                    chunk_content += delta_content
+                elif isinstance(delta_content, list):
+                    for part in delta_content:
+                        text = None
+                        if isinstance(part, dict):
+                            text = part.get("text")
+                        else:
+                            text = getattr(part, "text", None)
+                        if text:
+                            chunk_content += text
+            if not chunk_content:
+                continue
+
+            combined_content += chunk_content
+            response = StreamResponse(content=chunk_content, error=None)
+            yield f"data: {response.model_dump_json()}\n\n"
+
+        if combined_content:
+            normalized_content = complete_response(
+                combined_content,
+                model,
+                message,
+                session_id=session_id,
+                use_full_knowledge=use_full_knowledge,
+            )
+            final_response = StreamResponse(
+                content=f"\n\n[NORMALIZED_CONTENT]\n{normalized_content}",
+                error=None,
+            )
+            yield f"data: {final_response.model_dump_json()}\n\n"
+
+        yield "data: [DONE]\n\n"
+        elapsed_sec = time.perf_counter() - start_time
+        logger.info("OpenAI response streaming completed in %.2f sec", elapsed_sec)
+
+    except Exception as exc:
+        logger.error("OpenAI streaming error: %s", exc)
+        error_response = ErrorResponse(error=f"OpenAI error: {exc}")
         yield f"data: {error_response.model_dump_json()}\n\n"
 
 @app.post("/chat")
 async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=None), username: str = Depends(authenticate_user)):
-    """Handle streaming chat requests with OpenAI API"""
+    """Handle streaming chat requests using the configured LLM backend."""
 
     # ensure we have a session
     session_id = get_or_create_session(username, session_id)
@@ -599,12 +747,12 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
             detail="Unable to initialize chat session",
         )
 
-    client = get_openai_client()
+    client = get_llm_client()
 
     if not client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OpenAI API key not configured"
+            detail="Ollama endpoint not configured"
         )
 
     if request.model not in AVAILABLE_MODELS:
@@ -620,13 +768,30 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
 
     logger.info(f"Chat request: model={request.model}, message_length={len(request.message)}, use_full_knowledge={request.use_full_knowledge}")
 
+    if isinstance(client, OpenAIChatClient):
+        stream_gen = stream_openai_response(
+            message=request.message,
+            model=request.model,
+            client=client,
+            use_full_knowledge=request.use_full_knowledge,
+            session_id=session_id,
+        )
+    elif isinstance(client, OllamaChatClient):
+        stream_gen = stream_ollama_response(
+            message=request.message,
+            model=request.model,
+            client=client,
+            use_full_knowledge=request.use_full_knowledge,
+            session_id=session_id,
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unknown LLM client",
+        )
+
     return StreamingResponse(
-        stream_openai_response(
-            request.message,
-            request.model,
-            request.use_full_knowledge,
-            session_id=session_id
-        ),
+        stream_gen,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -653,19 +818,25 @@ async def create_new_session(username: str = Depends(authenticate_user)):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    client = get_openai_client()
+    client = get_llm_client()
+    backend = (
+        "openai" if isinstance(client, OpenAIChatClient)
+        else "ollama" if isinstance(client, OllamaChatClient)
+        else None
+    )
     return {
         "status": "healthy",
-        "openai_configured": client is not None,
+        "backend": backend,
+        "ollama_base_url": OLLAMA_BASE_URL if backend == "ollama" else None,
         "version": version
     }
 
 
 @app.get("/models", response_model=ModelsResponse)
 async def list_models():
-    """Return the list of available OpenAI models"""
+    """Return available chat models for the configured backend"""
     if not AVAILABLE_MODELS:
-        logger.error("No OpenAI models configured")
+        logger.error("No Ollama models configured")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No models configured"
@@ -684,16 +855,22 @@ async def list_models():
 def print_startup_info(config: Config):
     """Print application startup information"""
     print("=" * 60)
-    print("OpenAI Math Chat Server")
+    print("Local Math Chat Server")
     print("=" * 60)
 
-    if not config.has_openai_key:
-        print("WARNING: OPENAI_API_KEY not found!")
-        print("Create a .env file with:")
-        print("OPENAI_API_KEY=your_api_key_here")
-        print("The server will run but chat functionality will be disabled.")
+    if config.use_openai:
+        if not config.has_openai_credentials:
+            print("WARNING: OPENAI_API_KEY not configured!")
+        else:
+            print("Backend: OpenAI API")
     else:
-        print("OpenAI API key loaded")
+        if not config.has_ollama_endpoint:
+            print("WARNING: OLLAMA_BASE_URL not configured!")
+            print("Create a .env file with:")
+            print("OLLAMA_BASE_URL=http://127.0.0.1:11434")
+            print("Ensure Ollama is running locally with the desired model pulled.")
+        else:
+            print(f"Ollama endpoint: {config.ollama_base_url}")
 
     print(f"Starting server at http://{config.host}:{config.port}")
     print("Health check: /health")

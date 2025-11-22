@@ -291,12 +291,7 @@ class Retriever:
         self.collections = dict(collections)
         self.cfg = config or RetrieverConfig()
         embed_model = self.cfg.embedding_model or EMBEDDING_MODEL
-        self.embedder = embedding_client or EmbedClientUni(
-            use_openai=USE_OPENAI,
-            embedding_model=embed_model,
-            ollama_base_url=OLLAMA_BASE_URL,
-            ollama_model=embed_model,
-        )
+        self.embedder = embedding_client or EmbedClientUni(use_openai=USE_OPENAI)
         backend = "OpenAI" if USE_OPENAI else "Ollama"
         print(f"Retriever initialized with {backend} embedding model: {embed_model}")
         self._oa_client: Optional[Any] = None

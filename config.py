@@ -2,7 +2,7 @@
 import os
 from enum import Enum
 
-USE_OPENAI = True
+USE_OPENAI = False
 
 if USE_OPENAI:
     EMBEDDING_MODEL = 'text-embedding-3-small'  # Or other model like "text-embedding-ada-002"
