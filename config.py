@@ -31,6 +31,14 @@ GLOBAL_RAGDATA_MAP = {
     "DOCS":     ("D:/AL_KB/rag_data/docs",             RAGType.DOC)
 }
 
+# For posix the RAGDATA map would be something like:
+'''
+GLOBAL_RAGDATA_MAP = {
+    "CODE":     ("~/work/rag_data/bullet3/src",         RAGType.SRC),
+    "EXAMPLES": ("~/work/rag_data/bullet3/examples",    RAGType.SRC),
+    "DOCS":     ("~/work/rag_data/bullet3/docs",        RAGType.DOC)
+}
+'''
 
 # Files to ignore during code processing (updatedb_code.py)
 # Supports exact filenames and wildcard patterns

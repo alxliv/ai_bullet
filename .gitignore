@@ -53,6 +53,5 @@ chroma_store/
 chroma_store_*/
 
 .claude/settings.local.json
-config.py
 bkp_chroma_store/
 
