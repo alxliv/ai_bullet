@@ -23,6 +23,7 @@ from config import (
     CHROMA_DB_DIR,
     EMBEDDING_MODEL,
     GLOBAL_RAGDATA_MAP,
+    OLLAMA_BASE_URL,
     RAGType,
 )
 from dotenv import load_dotenv
@@ -32,12 +33,9 @@ from updatedb_helper import embed_record_with_retry, uniquify_records, token_len
 
 # ------------- Third-party deps -------------
 import chromadb
-from chromadb.config import Settings, DEFAULT_TENANT, DEFAULT_DATABASE
 from embed_client import EmbedClientUni
 load_dotenv()
 
-
-# ------------- Config defaults -------------
 
 if USE_OPENAI:
     MAX_ITEM_TOKENS     = 900    # tighter doc chunks keep grounding sharp for 4o-mini
@@ -50,20 +48,11 @@ else:
     MAX_REQUEST_TOKENS = 8192                # Maximum tokens per batch request
     DEFAULT_BATCH_LIMIT = 8192               # Sum of tokens per request
 
-embed_client = EmbedClientUni(
-    use_openai=USE_OPENAI,
-    embedding_model=EMBEDDING_MODEL,
-    ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-    ollama_model=os.getenv("OLLAMA_EMBED_MODEL", EMBEDDING_MODEL),
-)
-
-
+embed_client = EmbedClientUni(use_openai = USE_OPENAI)
 
 SUPPORTED_EXTS = {".pdf", ".docx", ".md", ".markdown", ".txt"}  # add more if needed
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
-
-
 
 # ------------- Hash / ID helpers -------------
 
@@ -446,7 +435,7 @@ def main():
         print("Usage:")
         print("  python updatedb_docs.py <collection name>")
         print(f"  Valid names are: {valid_names}")
-        cname = "BOOKS"
+        cname = "ARTICLES"
     else:
         cname = sys.argv[1]
 

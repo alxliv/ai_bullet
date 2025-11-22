@@ -1,40 +1,40 @@
 import os
+import sys
 from dotenv import load_dotenv
-from config import DOCUMENTS_PATH, SOURCES_PATH, EXAMPLES_PATH, CHROMA_DB_DIR, EMBEDDING_MODEL, IGNORE_FILES
+from config import CHROMA_DB_DIR, EMBEDDING_MODEL, IGNORE_FILES, USE_OPENAI
 from path_utils import encode_path
-
-from openai import OpenAI
-import tiktoken
+from tokenizer_utils import count_tokens, split_by_tokens
+from embed_client import EmbedClientUni
+from updatedb_helper import embed_record_with_retry, uniquify_records, short_hash, token_len
 import chromadb
-import hashlib
-from collections import defaultdict
+from collections import deque
 import lizard
 from pathlib import Path
 
-CPP_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".hxx"}
-
-MAX_ITEM_TOKENS   = 7800           # < 8192 to leave headroom
-MAX_REQUEST_TOKENS= 7800
-
-DOCUMENTS_FULL_PATH = os.path.expanduser(DOCUMENTS_PATH)
-SOURCES_FULL_PATH = os.path.expanduser(SOURCES_PATH)
-EXAMPLES_FULL_PATH = os.path.expanduser(EXAMPLES_PATH)
-CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
-
-enc = tiktoken.get_encoding("cl100k_base")
+from config import (
+    CHROMA_DB_DIR,
+    EMBEDDING_MODEL,
+    OLLAMA_BASE_URL,
+    GLOBAL_RAGDATA_MAP,
+    RAGType,
+)
 
 load_dotenv()
-client_oa = OpenAI()
 
-def token_len(txt: str) -> int:
-    return len(enc.encode(txt))
+# Optimized for Qwen3-4B (256K context window)
+# See TOKEN_LIMITS_GUIDE.md for rationale
+if USE_OPENAI:
+    MAX_ITEM_TOKENS   = 1200           # Handles larger functions/classes with context
+    MAX_REQUEST_TOKENS= 6000           # Larger batches for structured code
+else:
+    MAX_ITEM_TOKENS   = 3000           # Handles larger functions/classes with context
+    MAX_REQUEST_TOKENS= 12000          # Larger batches for structured code
 
-def short_hash(text: str, length=8) -> str:
-    return hashlib.md5(text.encode("utf-8")).hexdigest()[:length]
+CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
-def split_by_tokens(txt: str, max_tokens: int) -> list[str]:
-    toks = enc.encode(txt)
-    return [enc.decode(toks[i:i+max_tokens]) for i in range(0, len(toks), max_tokens)]
+CPP_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".hxx"}
+
+embed_client = EmbedClientUni(use_openai = USE_OPENAI)
 
 def grab_leading_comment(lines, start_idx, max_gap=2):
     """
@@ -176,43 +176,63 @@ def should_ignore_file(filename: str, ignore_patterns) -> bool:
         if '*' in pattern or '?' in pattern:
             if fnmatch.fnmatch(filename, pattern):
                 return True
+
     return False
 
+
 def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
+    """
+    Walk directory tree and extract code chunks from C/C++ files.
+
+    Args:
+        root_dir: Root directory to search
+        ignore_files: Set of filenames/patterns to skip. Supports:
+                     - Exact names: {"landscapeData.h", "test.cpp"}
+                     - Wildcards: {"test_*.cpp", "*_generated.h"}
+
+    Returns:
+        List of chunk dictionaries
+
+    Examples:
+        >>> chunks = walk_repo_and_chunk("./src", {"test_*.cpp", "generated.h"})
+    """
     all_chunks = []
     num_folders = 0
     total_files_processed = 0
     total_files_skipped = 0
+
     for dirpath, _, files in os.walk(root_dir):
         print(f"#{num_folders}. walk_repo_and_chunk() path={dirpath}")
-        num_folders +=1
+        num_folders += 1
         count = 0
+
         for name in files:
             # Check if file should be ignored
             if should_ignore_file(name, ignore_files):
                 print(f"\tSkipping ignored file: {name}")
                 total_files_skipped += 1
                 continue
+
+            # Check if it's a C/C++ file
             if os.path.splitext(name)[1].lower() in CPP_EXTS:
                 p = os.path.join(dirpath, name)
-                chunks = extract_chunks_with_lizard(p)
-                all_chunks.extend(chunks)
-                count+=1
-                total_files_processed += 1
-                print(f"\tFile: {name}, {count} files chunked in this folder ({len(chunks)} chunks)")
+                try:
+                    chunks = extract_chunks_with_lizard(p)
+                    all_chunks.extend(chunks)
+                    count += 1
+                    total_files_processed += 1
+                    print(f"\tFile: {name}, {count} files chunked in this folder ({len(chunks)} chunks)")
+                except Exception as e:
+                    print(f"\t[ERROR] Failed to process {name}: {e}")
+                    total_files_skipped += 1
 
     print(f"\n=== Summary ===")
     print(f"Folders processed: {num_folders}")
     print(f"Files processed: {total_files_processed}")
     print(f"Files skipped/ignored: {total_files_skipped}")
     print(f"Total chunks extracted: {len(all_chunks)}")
-    return all_chunks
 
-all_chunks = walk_repo_and_chunk(SOURCES_FULL_PATH)
-print(f"All {len(all_chunks)} chunks from {SOURCES_FULL_PATH} collected.")
-all_chunks_examples = walk_repo_and_chunk(EXAMPLES_FULL_PATH)
-print(f"All {len(all_chunks_examples)} chunks from {EXAMPLES_FULL_PATH} collected.")
-all_chunks += all_chunks_examples
+    return all_chunks
 
 def get_existing_ids(collection):
     """Return a set of all IDs already stored."""
@@ -224,47 +244,12 @@ def get_existing_ids(collection):
 
 # --- ID helpers --------------------------------------------------------------
 
-def stable_suffix(text: str, length=8) -> str:
-    """Short hash so same text → same suffix, different text → new suffix."""
-    return hashlib.md5(text.encode("utf-8")).hexdigest()[:length]
-
-def uniquify_records(records, already_seen: set):
-    """
-    Ensure every record has a unique id.
-    - If id is free: keep it.
-    - If id collides but text is identical: skip (we already have it).
-    - If id collides and text differs: append '#dup{n}-{hash}'.
-    """
-    seen_text_by_id = {}
-    out = []
-    dup_counters = defaultdict(int)
-
-    for r in records:
-        rid, txt = r["id"], r["text"]
-
-        if rid in already_seen:
-            # we already stored it in Chroma → skip
-            continue
-
-        if rid in seen_text_by_id:
-            if seen_text_by_id[rid] == txt:
-                # exact duplicate inside this batch → skip
-                continue
-            # different text but same id → rename
-            dup_counters[rid] += 1
-            new_id = f"{rid}#dup{dup_counters[rid]}-{stable_suffix(txt)}"
-            r = {**r, "id": new_id}
-            rid = new_id
-
-        seen_text_by_id[rid] = txt
-        already_seen.add(rid)
-        out.append(r)
-
-    return out
-
 def prepare_records(chunks):
     """Yield records, splitting any text that exceeds MAX_ITEM_TOKENS."""
+    nrec = 0
     for c in chunks:
+        nrec += 1
+        print(f"prepare_record #{nrec} out of {len(chunks)}")
         base_id = c["id"]
         txt = c["text"]
         if token_len(txt) <= MAX_ITEM_TOKENS:
@@ -272,63 +257,133 @@ def prepare_records(chunks):
         else:
             pieces = split_by_tokens(txt, MAX_ITEM_TOKENS)
             for idx, piece in enumerate(pieces):
-                new_id = f"{base_id}#p{idx}-{stable_suffix(piece)}"
+                new_id = f"{base_id}#p{idx}-{short_hash(piece)}"
                 meta = dict(c["metadata"])
                 meta.update({"piece_index": idx, "piece_count": len(pieces)})
                 yield {"id": new_id, "text": piece, "metadata": meta}
 
-def batch_by_token_budget(records):
-    """Group records so total tokens per request stays under MAX_REQUEST_TOKENS."""
-    batch, used = [], 0
-    for r in records:
-        tl = token_len(r["text"])
-        # (tl should already be <= MAX_ITEM_TOKENS)
-        if used + tl > MAX_REQUEST_TOKENS and batch:
-            yield batch
-            batch, used = [r], tl
-        else:
-            batch.append(r)
-            used += tl
-    if batch:
-        yield batch
-
-def embed_batch(texts):
-    """Call OpenAI embeddings once for a batch of texts."""
-    resp = client_oa.embeddings.create(model=EMBEDDING_MODEL, input=texts)
-    return [d.embedding for d in resp.data]
+def make_retry_splits(record, already_seen: set, target_tokens: int):
+    """Split a record into smaller pieces to satisfy embedding limits."""
+    pieces = split_by_tokens(record["text"], target_tokens)
+    if len(pieces) <= 1:
+        return []
+    level = record.get("_split_level", 0) + 1
+    base_meta = dict(record["metadata"])
+    base_meta.setdefault("parent_id", record["metadata"].get("parent_id", record["id"]))
+    base_meta["piece_count"] = len(pieces)
+    splits = []
+    for idx, piece in enumerate(pieces):
+        meta = dict(base_meta)
+        meta.update({
+            "piece_index": idx,
+            "retry_split": True,
+            "split_level": level,
+        })
+        new_id = f"{record['id']}#s{level}-{idx}-{short_hash(piece + f'|lvl{level}|{idx}')}"  # stable but unique per level
+        # ensure uniqueness in this run
+        while new_id in already_seen:
+            new_id = f"{record['id']}#s{level}-{idx}-{short_hash(piece + f'|lvl{level}|{idx}|{len(splits)}')}"
+        already_seen.add(new_id)
+        splits.append({
+            "id": new_id,
+            "text": piece,
+            "metadata": meta,
+            "_split_level": level,
+        })
+    return splits
 
 def embed_and_add(chunks, collection):
     existing = get_existing_ids(collection)
-    # split long ones
+    already_seen = set(existing)
     records = list(prepare_records(chunks))
-    # ensure uniqueness vs existing AND inside our current run
-    records = uniquify_records(records, already_seen=set(existing))
+    records = uniquify_records(records, already_seen=already_seen)
     if not records:
         print("Nothing new to embed.")
         return
 
-    records_left = len(records)
-    print(f"Total new records to process: {records_left}")
-    for batch in batch_by_token_budget(records):
-        texts     = [r["text"] for r in batch]
-        ids       = [r["id"]   for r in batch]
-        metadatas = [r["metadata"] for r in batch]
-        embs = embed_batch(texts)
-        collection.add(ids=ids, documents=texts, metadatas=metadatas, embeddings=embs)
-        records_left -= len(ids)
-        print(f"Added {len(ids)} records. {records_left} to go")
+    queue = deque(records)
+    total_pending = len(queue)
+    print(f"Total new records to process: {total_pending}")
 
-client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
-collection = client.get_or_create_collection(name="cpp_code")
+    batch_records = []
+    batch_embeddings = []
+    batch_tokens = 0
 
-# SANITY: check that we do not have duplicate IDs
-#ids = [c["id"] for c in all_chunks]
-#dups = [i for i, cnt in Counter(ids).items() if cnt > 1]
-#if dups:
-#    print("WARNING: duplicate IDs in all_chunks:", dups[:10])
+    def flush_batch():
+        nonlocal total_pending, batch_tokens
+        if not batch_records:
+            return
+        ids = [r["id"] for r in batch_records]
+        texts = [r["text"] for r in batch_records]
+        metas = [r["metadata"] for r in batch_records]
+        collection.add(ids=ids, documents=texts, metadatas=metas, embeddings=batch_embeddings)
+        total_pending -= len(ids)
+        print(f"Added {len(ids)} records. {total_pending} to go")
+        batch_records.clear()
+        batch_embeddings.clear()
+        batch_tokens = 0
 
-# ---- call it ----
-embed_and_add(all_chunks, collection)
+    while queue:
+        record = queue.popleft()
+        text = record["text"]
+        tl = token_len(text)
+        if tl > MAX_ITEM_TOKENS:
+            splits = make_retry_splits(record, already_seen, max(MIN_RETRY_TOKENS, MAX_ITEM_TOKENS // 2))
+            if splits:
+                queue.extendleft(reversed(splits))
+                total_pending += len(splits) - 1
+                continue
+            else:
+                print(f"[WARN] Record {record['id']} exceeds MAX_ITEM_TOKENS ({tl}) but cannot be split further.")
+        if batch_records and batch_tokens + tl > MAX_REQUEST_TOKENS:
+            flush_batch()
+        try:
+            embedding, new_records = embed_record_with_retry(
+                record, embed_client, already_seen, MAX_ITEM_TOKENS, verbose=True
+            )
+        except Exception:
+            flush_batch()
+            raise
+        if new_records:
+            queue.extendleft(reversed(new_records))
+            total_pending += len(new_records) - 1
+            continue
+        batch_records.append(record)
+        batch_embeddings.append(embedding)
+        batch_tokens += tl
 
-print("All done.")
+    flush_batch()
 
+def update_code_collection(db_client, name, full_path):
+    print(f"Updating code collection {name}")
+    collection = db_client.get_or_create_collection(name)
+
+    code_chunks = walk_repo_and_chunk(full_path)
+    print(f"All {len(code_chunks)} chunks from {full_path} collected.")
+    embed_and_add(code_chunks, collection)
+    print("Done.")
+
+def main():
+    valid_names = ", ".join(
+        sorted(key for key, (_, entry_type) in GLOBAL_RAGDATA_MAP.items() if entry_type == RAGType.SRC)
+    )
+
+    if len(sys.argv) < 2:
+        print("Usage:")
+        print("  python updatedb_code.py <collection name>")
+        print(f"  Valid names are: {valid_names}")
+        cname = "BASECODE"
+    else:
+        cname = sys.argv[1]
+
+    rag_entry = GLOBAL_RAGDATA_MAP.get(cname)
+    if rag_entry is None:
+        print(f"[ERROR] Unknown collection '{cname}'. Valid options are: {valid_names}")
+        return
+
+    doc_path, _ = rag_entry
+    client = chromadb.PersistentClient(path=CHROMA_DB_FULL_PATH)
+    update_code_collection(client, cname, doc_path)
+
+if __name__ == "__main__":
+    main()

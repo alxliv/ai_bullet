@@ -17,9 +17,12 @@ For offline usage, tokenizers are loaded with local_files_only=True.
 """
 
 import os
+import time
 import logging
 from typing import List, Tuple, Optional
 from functools import lru_cache
+
+Verbose=True
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +96,9 @@ def _maybe_get_openai_tokenizer(model: str) -> Optional[_TiktokenWrapper]:
             return _TiktokenWrapper(encoding)
     return None
 
-
 @lru_cache(maxsize=5)
 def get_tokenizer(model: str = DEFAULT_MODEL):
+
     """
     Load and cache tokenizer for given model.
 
@@ -245,12 +248,18 @@ def split_by_tokens(text: str, max_tokens: int, model: str = DEFAULT_MODEL) -> L
         RuntimeError: If tokenizer is not available
     """
     tokenizer = get_tokenizer(model)
-    tokens = tokenizer.encode(text)
 
+    start = time.perf_counter()
+    tokens = tokenizer.encode(text)
     chunks = []
     for i in range(0, len(tokens), max_tokens):
         chunk_tokens = tokens[i:i + max_tokens]
         chunks.append(tokenizer.decode(chunk_tokens))
+
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    if Verbose:
+        print(f"[{elapsed_ms:.2f} ms] split_by_tokens(text={len(text)} chars) of {model}, produced {len(tokens)} tokens and {len(chunks)} chunks")
 
     return chunks
 

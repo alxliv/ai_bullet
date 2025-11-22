@@ -3,9 +3,19 @@ from __future__ import annotations
 
 import os
 from typing import List, Optional
-
 import httpx
+import time
 
+Verbose=True
+
+from config import (
+    EMBEDDING_MODEL,
+    OPENAI_BASE_URL,
+    OLLAMA_BASE_URL
+)
+
+from dotenv import load_dotenv
+load_dotenv()
 
 class EmbedClientUni:
     """Provide a single embed() API regardless of provider."""
@@ -14,47 +24,31 @@ class EmbedClientUni:
         self,
         *,
         use_openai: bool,
-        embedding_model: str,
-        openai_api_key: Optional[str] = None,
-        openai_base_url: Optional[str] = None,
-        ollama_base_url: Optional[str] = None,
-        ollama_model: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> None:
         self.use_openai = use_openai
-        self.embedding_model = embedding_model
+        self.embedding_model = EMBEDDING_MODEL
         self._timeout = timeout
 
         if use_openai:
-            api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+            api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise RuntimeError("OPENAI_API_KEY is required when USE_OPENAI is enabled")
 
-            base_url = (
-                openai_base_url
-                or os.getenv("OPENAI_BASE_URL")
-                or "https://api.openai.com/v1"
-            ).rstrip("/")
+            base_url = OPENAI_BASE_URL.rstrip("/")
             self._openai_headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             }
             self._client = httpx.Client(base_url=base_url, timeout=timeout)
-            self._openai_model = embedding_model
+            self._openai_model = EMBEDDING_MODEL
         else:
-            base_url = (
-                ollama_base_url
-                or os.getenv("OLLAMA_BASE_URL")
-                or "http://127.0.0.1:11434"
-            ).rstrip("/")
-            self._ollama_model = (
-                ollama_model
-                or os.getenv("OLLAMA_EMBED_MODEL")
-                or embedding_model
-            )
+            base_url = OLLAMA_BASE_URL.rstrip("/")
+            self._ollama_model = EMBEDDING_MODEL
             self._client = httpx.Client(base_url=base_url, timeout=timeout)
 
     def embed(self, text: str) -> List[float]:
+        start = time.perf_counter()
         if self.use_openai:
             payload = {"model": self._openai_model, "input": text}
             response = self._client.post(
@@ -68,15 +62,19 @@ class EmbedClientUni:
                 raise RuntimeError("OpenAI embedding response missing data") from exc
             if not isinstance(embedding, list):
                 raise RuntimeError("OpenAI embedding response is not a list of floats")
-            return embedding
+        else:
+            payload = {"model": self._ollama_model, "prompt": text}
+            response = self._client.post("/api/embeddings", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            embedding = data.get("embedding")
+            if not isinstance(embedding, list):
+                raise RuntimeError("Ollama embeddings response missing 'embedding' vector")
 
-        payload = {"model": self._ollama_model, "prompt": text}
-        response = self._client.post("/api/embeddings", json=payload)
-        response.raise_for_status()
-        data = response.json()
-        embedding = data.get("embedding")
-        if not isinstance(embedding, list):
-            raise RuntimeError("Ollama embeddings response missing 'embedding' vector")
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if Verbose:
+            print(f"[{elapsed_ms:.2f} ms] embed(text={len(text)} chars) of {payload['model']}, produced {len(embedding)} embedding vector.")
+
         return embedding
 
     def close(self) -> None:

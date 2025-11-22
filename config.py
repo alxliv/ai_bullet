@@ -7,14 +7,15 @@ USE_OPENAI = True
 if USE_OPENAI:
     EMBEDDING_MODEL = 'text-embedding-3-small'  # Or other model like "text-embedding-ada-002"
     LLM_DEFAULT_MODEL = "gpt-4o-mini"
+    CHROMA_DB_DIR = 'chroma_store_gpt4o/'
 else:
     EMBEDDING_MODEL = 'nomic-embed-text'  # Local embedding model served by Ollama
     LLM_DEFAULT_MODEL = "qwen3:4b-instruct-2507-fp16"
+    CHROMA_DB_DIR = 'chroma_store_qwen3/'
 
-
-CHROMA_DB_DIR = 'chroma_store/'
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
+OPENAI_BASE_URL = "https://api.openai.com/v1"
 OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 class RAGType(str, Enum):
@@ -28,7 +29,9 @@ GLOBAL_RAGDATA_MAP = {
     "EXAMPLES": ("D:/AL_KB/rag_data/sources/examples", RAGType.SRC),
     "TESTS":    ("D:/AL_KB/rag_data/sources/tests",    RAGType.SRC),
     "NOTES":    ("D:/AL_KB/rag_data/notes",            RAGType.DOC),
-    "DOCS":     ("D:/AL_KB/rag_data/docs",             RAGType.DOC)
+    "DOCS":     ("D:/AL_KB/rag_data/docs",             RAGType.DOC),
+    "ARTICLES": ("D:/AL_KB/rag_data/articles",         RAGType.DOC)
+
 }
 
 # For posix the RAGDATA map would be something like:
