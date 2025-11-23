@@ -233,7 +233,7 @@ def chunk_pdf_pages(
             }
 # ------------- De-dup helpers -------------
 
-def get_all_ids(col) -> set[str]:
+def get_existing_ids(col) -> set[str]:
     total = col.count()
     if total == 0:
         return set()
@@ -418,7 +418,7 @@ def update_docs_collection(db_client, name, full_path):
     print(f"Found {len(records)} records in total")
 
     # De-dup vs existing
-    existing = get_all_ids(col)
+    existing = get_existing_ids(col)
     uniq_records = uniquify_records(records, already_seen=set(existing))
     print(f"After dedup: {len(uniq_records)} new chunks to embed")
 

@@ -10,6 +10,8 @@ import chromadb
 from collections import deque
 import lizard
 from pathlib import Path
+from updatedb_docs import get_existing_ids, embed_and_add
+
 
 from config import (
     CHROMA_DB_DIR,
@@ -234,13 +236,6 @@ def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
 
     return all_chunks
 
-def get_existing_ids(collection):
-    """Return a set of all IDs already stored."""
-    total = collection.count()
-    if total == 0:
-        return set()
-    res = collection.get(include=[], limit=total, offset=0)
-    return set(res["ids"])
 
 # --- ID helpers --------------------------------------------------------------
 
@@ -262,97 +257,6 @@ def prepare_records(chunks):
                 meta.update({"piece_index": idx, "piece_count": len(pieces)})
                 yield {"id": new_id, "text": piece, "metadata": meta}
 
-def make_retry_splits(record, already_seen: set, target_tokens: int):
-    """Split a record into smaller pieces to satisfy embedding limits."""
-    pieces = split_by_tokens(record["text"], target_tokens)
-    if len(pieces) <= 1:
-        return []
-    level = record.get("_split_level", 0) + 1
-    base_meta = dict(record["metadata"])
-    base_meta.setdefault("parent_id", record["metadata"].get("parent_id", record["id"]))
-    base_meta["piece_count"] = len(pieces)
-    splits = []
-    for idx, piece in enumerate(pieces):
-        meta = dict(base_meta)
-        meta.update({
-            "piece_index": idx,
-            "retry_split": True,
-            "split_level": level,
-        })
-        new_id = f"{record['id']}#s{level}-{idx}-{short_hash(piece + f'|lvl{level}|{idx}')}"  # stable but unique per level
-        # ensure uniqueness in this run
-        while new_id in already_seen:
-            new_id = f"{record['id']}#s{level}-{idx}-{short_hash(piece + f'|lvl{level}|{idx}|{len(splits)}')}"
-        already_seen.add(new_id)
-        splits.append({
-            "id": new_id,
-            "text": piece,
-            "metadata": meta,
-            "_split_level": level,
-        })
-    return splits
-
-def embed_and_add(chunks, collection):
-    existing = get_existing_ids(collection)
-    already_seen = set(existing)
-    records = list(prepare_records(chunks))
-    records = uniquify_records(records, already_seen=already_seen)
-    if not records:
-        print("Nothing new to embed.")
-        return
-
-    queue = deque(records)
-    total_pending = len(queue)
-    print(f"Total new records to process: {total_pending}")
-
-    batch_records = []
-    batch_embeddings = []
-    batch_tokens = 0
-
-    def flush_batch():
-        nonlocal total_pending, batch_tokens
-        if not batch_records:
-            return
-        ids = [r["id"] for r in batch_records]
-        texts = [r["text"] for r in batch_records]
-        metas = [r["metadata"] for r in batch_records]
-        collection.add(ids=ids, documents=texts, metadatas=metas, embeddings=batch_embeddings)
-        total_pending -= len(ids)
-        print(f"Added {len(ids)} records. {total_pending} to go")
-        batch_records.clear()
-        batch_embeddings.clear()
-        batch_tokens = 0
-
-    while queue:
-        record = queue.popleft()
-        text = record["text"]
-        tl = token_len(text)
-        if tl > MAX_ITEM_TOKENS:
-            splits = make_retry_splits(record, already_seen, max(MIN_RETRY_TOKENS, MAX_ITEM_TOKENS // 2))
-            if splits:
-                queue.extendleft(reversed(splits))
-                total_pending += len(splits) - 1
-                continue
-            else:
-                print(f"[WARN] Record {record['id']} exceeds MAX_ITEM_TOKENS ({tl}) but cannot be split further.")
-        if batch_records and batch_tokens + tl > MAX_REQUEST_TOKENS:
-            flush_batch()
-        try:
-            embedding, new_records = embed_record_with_retry(
-                record, embed_client, already_seen, MAX_ITEM_TOKENS, verbose=True
-            )
-        except Exception:
-            flush_batch()
-            raise
-        if new_records:
-            queue.extendleft(reversed(new_records))
-            total_pending += len(new_records) - 1
-            continue
-        batch_records.append(record)
-        batch_embeddings.append(embedding)
-        batch_tokens += tl
-
-    flush_batch()
 
 def update_code_collection(db_client, name, full_path):
     print(f"Updating code collection {name}")
@@ -360,7 +264,13 @@ def update_code_collection(db_client, name, full_path):
 
     code_chunks = walk_repo_and_chunk(full_path)
     print(f"All {len(code_chunks)} chunks from {full_path} collected.")
-    embed_and_add(code_chunks, collection)
+ 
+    existing = get_existing_ids(collection)
+    already_seen = set(existing)
+    records = list(prepare_records(code_chunks))
+    uniq_records = uniquify_records(records, already_seen=already_seen)
+
+    embed_and_add(uniq_records, collection)
     print("Done.")
 
 def main():
