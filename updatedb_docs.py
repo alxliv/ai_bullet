@@ -19,36 +19,24 @@ from pypdf import PdfReader
 import docx
 from typing import List, Dict, Any, Iterable, Tuple, Optional
 from config import (
-    USE_OPENAI,
     CHROMA_DB_DIR,
-    EMBEDDING_MODEL,
     GLOBAL_RAGDATA_MAP,
-    OLLAMA_BASE_URL,
     RAGType,
 )
 from dotenv import load_dotenv
 from path_utils import encode_path
 from tokenizer_utils import split_by_tokens, encode as encode_tokens, decode as decode_tokens
-from updatedb_helper import embed_record_with_retry, uniquify_records, token_len, short_hash
+from updatedb_helper import (
+    uniquify_records, token_len, short_hash, 
+    get_existing_ids, 
+    MAX_ITEM_TOKENS, MAX_REQUEST_TOKENS,
+    embed_and_add
+)
 
 # ------------- Third-party deps -------------
 import chromadb
-from embed_client import EmbedClientUni
 load_dotenv()
 
-
-if USE_OPENAI:
-    MAX_ITEM_TOKENS     = 900    # tighter doc chunks keep grounding sharp for 4o-mini
-    MAX_REQUEST_TOKENS  = 4500   # ~5 chunks per embed request with headroom
-    DEFAULT_BATCH_LIMIT = 4500   # matches the per-request cap
-else:
-    # Optimized for Qwen3-4B (256K context window)
-    # See TOKEN_LIMITS_GUIDE.md for rationale
-    MAX_ITEM_TOKENS = 2048                   # Maximum tokens per chunk (balanced for RAG)
-    MAX_REQUEST_TOKENS = 8192                # Maximum tokens per batch request
-    DEFAULT_BATCH_LIMIT = 8192               # Sum of tokens per request
-
-embed_client = EmbedClientUni(use_openai = USE_OPENAI)
 
 SUPPORTED_EXTS = {".pdf", ".docx", ".md", ".markdown", ".txt"}  # add more if needed
 
@@ -231,20 +219,7 @@ def chunk_pdf_pages(
                     "end_token": end_token,
                 },
             }
-# ------------- De-dup helpers -------------
 
-def get_existing_ids(col) -> set[str]:
-    total = col.count()
-    if total == 0:
-        return set()
-    ids = []
-    offset = 0
-    LIMIT = 5000
-    while offset < total:
-        res = col.get(include=[], limit=min(LIMIT, total - offset), offset=offset)
-        ids.extend(res["ids"])
-        offset += LIMIT
-    return set(ids)
 
 # ------------- Batching / embedding -------------
 
@@ -282,93 +257,6 @@ def batch_by_token_budget(records: List[Dict[str, Any]], max_req_tokens: int = M
 
     return batches
 
-def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
-    """
-    Embed and add records to ChromaDB with retry logic and progress tracking.
-    Uses embed_record_with_retry for robust error handling.
-    """
-    if not records:
-        if verbose:
-            print("Nothing to embed.")
-        return
-
-    from collections import deque
-
-    already_seen = set()
-    queue = deque(records)
-    total_pending = len(queue)
-
-    if verbose:
-        print(f"Total new records to process: {total_pending}")
-
-    batch_records = []
-    batch_embeddings = []
-    batch_tokens = 0
-
-    def flush_batch():
-        nonlocal total_pending, batch_tokens
-        if not batch_records:
-            return
-        ids = [r["id"] for r in batch_records]
-        texts = [r["text"] for r in batch_records]
-        metas = [r["metadata"] for r in batch_records]
-        col.add(ids=ids, documents=texts, metadatas=metas, embeddings=batch_embeddings)
-        total_pending -= len(ids)
-        if verbose:
-            print(f"Added {len(ids)} records. {total_pending} to go")
-        batch_records.clear()
-        batch_embeddings.clear()
-        batch_tokens = 0
-
-    while queue:
-        record = queue.popleft()
-        text = record["text"]
-        tl = token_len(text)
-
-        # Check if record is too large
-        if tl > MAX_ITEM_TOKENS:
-            # Split oversized record
-            pieces = split_by_tokens(text, MAX_ITEM_TOKENS // 2)
-            for i, piece in enumerate(pieces):
-                new_id = f"{record['id']}#split{i}_{short_hash(piece)}"
-                if new_id in already_seen:
-                    continue
-                already_seen.add(new_id)
-                new_record = record.copy()
-                new_record["id"] = new_id
-                new_record["text"] = piece
-                queue.append(new_record)
-                total_pending += 1
-            total_pending -= 1
-            continue
-
-        # Flush batch if adding this record would exceed token limit
-        if batch_records and batch_tokens + tl > MAX_REQUEST_TOKENS:
-            flush_batch()
-
-        # Embed with retry logic
-        try:
-            embedding, new_records = embed_record_with_retry(
-                record, embed_client, already_seen, MAX_ITEM_TOKENS, verbose=verbose
-            )
-        except Exception:
-            flush_batch()
-            raise
-
-        # If splitting was needed, add splits to queue
-        if new_records:
-            for nr in reversed(new_records):
-                queue.appendleft(nr)
-            total_pending += len(new_records) - 1
-            continue
-
-        # Add to batch
-        batch_records.append(record)
-        batch_embeddings.append(embedding)
-        batch_tokens += tl
-
-    # Flush remaining batch
-    flush_batch()
 
 # ------------- Main pipeline -------------
 

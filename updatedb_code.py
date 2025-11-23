@@ -4,14 +4,11 @@ from dotenv import load_dotenv
 from config import CHROMA_DB_DIR, EMBEDDING_MODEL, IGNORE_FILES, USE_OPENAI
 from path_utils import encode_path
 from tokenizer_utils import count_tokens, split_by_tokens
-from embed_client import EmbedClientUni
-from updatedb_helper import embed_record_with_retry, uniquify_records, short_hash, token_len
+from updatedb_helper import embed_record_with_retry, uniquify_records, short_hash, token_len, get_existing_ids, embed_and_add
 import chromadb
 from collections import deque
 import lizard
 from pathlib import Path
-from updatedb_docs import get_existing_ids, embed_and_add
-
 
 from config import (
     CHROMA_DB_DIR,
@@ -36,7 +33,7 @@ CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
 CPP_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".hxx"}
 
-embed_client = EmbedClientUni(use_openai = USE_OPENAI)
+
 
 def grab_leading_comment(lines, start_idx, max_gap=2):
     """
