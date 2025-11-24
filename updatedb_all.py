@@ -3,7 +3,7 @@
 from __future__ import annotations
 import os
 import sys
-import chromadb
+from chromadb_shim import chromadb
 from updatedb_docs import update_docs_collection
 from updatedb_code import update_code_collection
 

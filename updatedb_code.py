@@ -5,7 +5,7 @@ from config import CHROMA_DB_DIR, EMBEDDING_MODEL, IGNORE_FILES, USE_OPENAI
 from path_utils import encode_path
 from tokenizer_utils import count_tokens, split_by_tokens
 from updatedb_helper import embed_record_with_retry, uniquify_records, short_hash, token_len, get_existing_ids, embed_and_add
-import chromadb
+from chromadb_shim import chromadb
 from collections import deque
 import lizard
 from pathlib import Path

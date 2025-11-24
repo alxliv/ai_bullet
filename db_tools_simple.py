@@ -19,7 +19,7 @@ from pathlib import Path
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ["CHROMA_TELEMETRY"] = "false"
 
-import chromadb
+from chromadb_shim import chromadb
 
 try:
     from config import CHROMA_DB_DIR

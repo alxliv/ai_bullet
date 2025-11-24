@@ -32,9 +32,8 @@ from updatedb_helper import (
     MAX_ITEM_TOKENS, MAX_REQUEST_TOKENS,
     embed_and_add
 )
+from chromadb_shim import chromadb
 
-# ------------- Third-party deps -------------
-import chromadb
 load_dotenv()
 
 

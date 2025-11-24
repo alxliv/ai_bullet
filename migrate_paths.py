@@ -20,7 +20,7 @@ Options:
 
 import os
 import argparse
-import chromadb
+from chromadb_shim import chromadb
 from config import CHROMA_DB_DIR
 from path_utils import encode_path, is_encoded_path, DOCS_ROOT, SRC_ROOT, EXAMPLES_ROOT, LEGACY_VARIABLES
 
