@@ -21,38 +21,39 @@ import time
 import logging
 from typing import List, Tuple, Optional
 from functools import lru_cache
+from config import USE_OPENAI, LLM_DEFAULT_MODEL
 
 Verbose=True
 
 logger = logging.getLogger(__name__)
 
-# Try to import transformers library
-try:
-    from transformers import AutoTokenizer
-    HAS_TRANSFORMERS = True
-except ImportError:
-    HAS_TRANSFORMERS = False
-    logger.warning("transformers library not installed. Install with: pip install transformers")
+if USE_OPENAI:
+    # Try to import tiktoken for OpenAI models
+    try:
+        import tiktoken  # type: ignore
+        HAS_TIKTOKEN = True
+    except ImportError:
+        HAS_TIKTOKEN = False
+        logger.warning("tiktoken library not installed. Install with: pip install tiktoken")
+else:
+    # Try to import transformers library
+    try:
+        from transformers import AutoTokenizer
+        HAS_TRANSFORMERS = True
+    except ImportError:
+        HAS_TRANSFORMERS = False
+        logger.warning("transformers library not installed. Install with: pip install transformers")
 
-# Try to import tiktoken for OpenAI models
-try:
-    import tiktoken  # type: ignore
-    HAS_TIKTOKEN = True
-except ImportError:
-    HAS_TIKTOKEN = False
-    logger.warning("tiktoken library not installed. Install with: pip install tiktoken")
 
 
 # Map model names to local tokenizer directories
 TOKENIZER_MAP = {
+    "qwen3:4b-instruct-2507-fp16": "./tokenizers/qwen",
     "qwen3:4b-instruct": "./tokenizers/qwen",
     "qwen2.5": "./tokenizers/qwen",
     "qwen": "./tokenizers/qwen",
     # Add more models as needed
 }
-
-# Default model
-DEFAULT_MODEL = "gpt-4o-mini"
 
 # Known OpenAI model encodings (fallback order matters)
 OPENAI_MODEL_ENCODINGS = (
@@ -97,7 +98,7 @@ def _maybe_get_openai_tokenizer(model: str) -> Optional[_TiktokenWrapper]:
     return None
 
 @lru_cache(maxsize=5)
-def get_tokenizer(model: str = DEFAULT_MODEL):
+def get_tokenizer(model: str = LLM_DEFAULT_MODEL):
 
     """
     Load and cache tokenizer for given model.
@@ -152,7 +153,7 @@ def get_tokenizer(model: str = DEFAULT_MODEL):
         raise RuntimeError(f"Failed to load tokenizer from {tokenizer_path}: {e}")
 
 
-def encode(text: str, model: str = DEFAULT_MODEL) -> List[int]:
+def encode(text: str, model: str = LLM_DEFAULT_MODEL) -> List[int]:
     """
     Encode text to token IDs.
 
@@ -170,7 +171,7 @@ def encode(text: str, model: str = DEFAULT_MODEL) -> List[int]:
     return tokenizer.encode(text)
 
 
-def decode(ids: List[int], model: str = DEFAULT_MODEL) -> str:
+def decode(ids: List[int], model: str = LLM_DEFAULT_MODEL) -> str:
     """
     Decode token IDs to text.
 
@@ -188,7 +189,7 @@ def decode(ids: List[int], model: str = DEFAULT_MODEL) -> str:
     return tokenizer.decode(ids)
 
 
-def count_tokens(text: str, model: str = DEFAULT_MODEL) -> int:
+def count_tokens(text: str, model: str = LLM_DEFAULT_MODEL) -> int:
     """
     Count the number of tokens in text.
 
@@ -206,7 +207,7 @@ def count_tokens(text: str, model: str = DEFAULT_MODEL) -> int:
     return len(tokenizer.encode(text))
 
 
-def truncate(text: str, max_tokens: int, model: str = DEFAULT_MODEL) -> Tuple[str, int]:
+def truncate(text: str, max_tokens: int, model: str = LLM_DEFAULT_MODEL) -> Tuple[str, int]:
     """
     Truncate text to maximum token count.
 
@@ -232,7 +233,7 @@ def truncate(text: str, max_tokens: int, model: str = DEFAULT_MODEL) -> Tuple[st
     return truncated_text, len(truncated_tokens)
 
 
-def split_by_tokens(text: str, max_tokens: int, model: str = DEFAULT_MODEL) -> List[str]:
+def split_by_tokens(text: str, max_tokens: int, model: str = LLM_DEFAULT_MODEL) -> List[str]:
     """
     Split text into chunks by token count.
 

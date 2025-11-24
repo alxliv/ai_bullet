@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 import httpx
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+
 from my_logger import setup_logger;
 from retriever import create_retriever
 from config import (
@@ -32,6 +32,9 @@ from config import (
     OLLAMA_BASE_URL,
     OPENAI_BASE_URL,
 )
+if USE_OPENAI:
+    from openai import AsyncOpenAI
+
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
@@ -445,7 +448,7 @@ def normalize_repo_links(markdown_text: str) -> str:
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _replace, markdown_text)
 
 
-def save_response(session_id: str, model: str, user_message: str, assistant_message: str, use_full_knowledge: bool = False) -> None:
+def save_response(session_id: str, model: str, user_message: str, assistant_message: str, use_full_knowledge: bool) -> None:
     """Persist a completed user/assistant exchange to disk."""
     session_data = user_sessions.get(session_id)
 
