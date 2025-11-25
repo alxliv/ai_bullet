@@ -185,4 +185,3 @@ Math expressions are protected with placeholders before markdown parsing to avoi
 ### Known Issues
 1. **Session storage**: In-memory sessions lost on restart. Consider persistent storage for production.
 2. **Source score filtering**: Minimum relevance thresholds (0.25 and 0.08) may need tuning for different datasets.
-3. **Legacy databases**: If migrating from old VPS-based database, run `migrate_paths.py` to convert hardcoded paths to variable-based encoding.

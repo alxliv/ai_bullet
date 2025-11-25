@@ -310,18 +310,20 @@ class Retriever:
 
     # --------- Retrieval ---------
     def _query_one(self, name: str, col, q_emb: List[float], k: int) -> List[Hit]:
-        res = col.query(
-            query_embeddings=[q_emb],
-            n_results=k,
-            include=["documents", "metadatas", "distances", "embeddings"],
-        )
+        out: List[Hit] = []
+        try:
+            res = col.query(query_embeddings=[q_emb], n_results=k, include=["documents", "metadatas", "distances", "embeddings"])
+        except Exception as e:
+            print(f"Query of DB collection {name} failed.")
+            return out
+
         ids = res["ids"][0]
         docs = res["documents"][0]
         metas = res["metadatas"][0]
         dists = res.get("distances", [[None]*len(ids)])[0]
         embs  = res.get("embeddings", [[None]*len(ids)])[0]
 
-        out: List[Hit] = []
+
         for rid, doc, meta, dist, emb in zip(ids, docs, metas, dists, embs):
             score = _cosine_to_similarity(dist) if dist is not None else 0.0
             out.append(Hit(

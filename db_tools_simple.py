@@ -6,9 +6,9 @@ db_tools_simple.py
 Simple utility for managing ChromaDB collections using ChromaDB client API.
 
 Usage:
-    python db_tools_simple.py list
-    python db_tools_simple.py remove <collection_name>
     python db_tools_simple.py info
+    python db_tools_simple.py remove <collection_name>
+    python db_tools_simple.py clean [--force]
 """
 
 import os
@@ -22,9 +22,24 @@ os.environ["CHROMA_TELEMETRY"] = "false"
 from chromadb_shim import chromadb
 
 try:
-    from config import CHROMA_DB_DIR
-except:
+    from config import CHROMA_DB_DIR, GLOBAL_RAGDATA_MAP, RAGType
+except ImportError:
     CHROMA_DB_DIR = "chroma_store_qwen3/"
+    GLOBAL_RAGDATA_MAP = {}
+    from enum import Enum
+    class RAGType(str, Enum):
+        DOC = "doc"
+        SRC = "src"
+
+
+def get_collection_type(collection_name):
+    """Determine collection type (CODE/DOC) from collection name."""
+    # Check if collection name matches any key in GLOBAL_RAGDATA_MAP
+    for key, (_, rag_type) in GLOBAL_RAGDATA_MAP.items():
+        if collection_name.upper() == key.upper():
+            return rag_type.value
+
+    return "UNKNOWN"
 
 
 def get_client():
@@ -37,45 +52,6 @@ def get_client():
         os.makedirs(db_path, exist_ok=True)
 
     return chromadb.PersistentClient(path=db_path)
-
-
-def list_collections_simple():
-    """List all collections using ChromaDB client."""
-    db_path = os.path.expanduser(CHROMA_DB_DIR)
-
-    try:
-        client = get_client()
-        collections = client.list_collections()
-    except Exception as e:
-        print(f"Error accessing database with ChromaDB client: {e}")
-        print("\nThis may indicate a database created with an older ChromaDB version.")
-        print("Recommendation: Delete the database and recreate it:")
-        print(f"  rm -rf {db_path}")
-        print(f"  python updatedb_code.py")
-        print(f"  python updatedb_docs.py")
-        return
-
-    print(f"\n{'='*60}")
-    print(f"Collections in database: {db_path}")
-    print(f"{'='*60}")
-
-    if not collections:
-        print("No collections found in the database.")
-        print("\nTip: Run updatedb_code.py or updatedb_docs.py to create collections")
-    else:
-        for idx, collection in enumerate(collections, 1):
-            try:
-                count = collection.count()
-                print(f"{idx}. {collection.name}")
-                print(f"   └─ Records: {count:,}")
-            except Exception as e:
-                print(f"{idx}. {collection.name}")
-                print(f"   └─ Error getting count: {e}")
-
-        print(f"{'='*60}")
-        print(f"Total collections: {len(collections)}")
-
-    print()
 
 
 def remove_collection_simple(collection_name, force=False):
@@ -164,20 +140,33 @@ def show_info():
 
         print(f"\nCollections: {len(collections)}")
 
-        if collections:
+        if not collections:
+            print("No collections found in the database.")
+            print("\nTip: Run updatedb_code.py or updatedb_docs.py to create collections")
+        else:
+            print()
             total_docs = 0
-            for collection in collections:
+            for idx, collection in enumerate(collections, 1):
                 try:
                     count = collection.count()
                     total_docs += count
-                    print(f"  - {collection.name}: {count:,} records")
+                    col_type = get_collection_type(collection.name)
+                    print(f"{idx}. {collection.name} ({col_type})")
+                    print(f"   └─ Records: {count:,}")
                 except Exception as e:
-                    print(f"  - {collection.name}: Error getting count")
+                    col_type = get_collection_type(collection.name)
+                    print(f"{idx}. {collection.name} ({col_type})")
+                    print(f"   └─ Error getting count: {e}")
 
             if total_docs > 0:
                 print(f"\nTotal records: {total_docs:,}")
     except Exception as e:
         print(f"Error accessing collections: {e}")
+        print("\nThis may indicate a database created with an older ChromaDB version.")
+        print("Recommendation: Delete the database and recreate it:")
+        print(f"  rm -rf {db_path}")
+        print(f"  python updatedb_code.py")
+        print(f"  python updatedb_docs.py")
 
     print(f"{'='*60}\n")
 
@@ -218,16 +207,15 @@ def clean_database(force=False):
 def main():
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python db_tools_simple.py list")
+        print("  python db_tools_simple.py info")
         print("  python db_tools_simple.py remove <collection_name> [--force]")
         print("  python db_tools_simple.py clean [--force]     # Delete entire database")
-        print("  python db_tools_simple.py info")
         return 1
 
     command = sys.argv[1]
 
-    if command == "list":
-        list_collections_simple()
+    if command == "info":
+        show_info()
 
     elif command == "remove":
         if len(sys.argv) < 3:
@@ -243,12 +231,9 @@ def main():
         force = "--force" in sys.argv
         clean_database(force)
 
-    elif command == "info":
-        show_info()
-
     else:
         print(f"Unknown command: {command}")
-        print("Available commands: list, remove, clean, info")
+        print("Available commands: info, remove, clean")
         return 1
 
     return 0
