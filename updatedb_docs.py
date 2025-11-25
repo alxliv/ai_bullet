@@ -27,8 +27,8 @@ from dotenv import load_dotenv
 from path_utils import encode_path
 from tokenizer_utils import split_by_tokens, encode as encode_tokens, decode as decode_tokens
 from updatedb_helper import (
-    uniquify_records, token_len, short_hash, 
-    get_existing_ids, 
+    uniquify_records, token_len, short_hash,
+    get_existing_ids,
     MAX_ITEM_TOKENS, MAX_REQUEST_TOKENS,
     embed_and_add
 )
@@ -322,7 +322,7 @@ def main():
         print("Usage:")
         print("  python updatedb_docs.py <collection name>")
         print(f"  Valid names are: {valid_names}")
-        cname = "ARTICLES"
+        return
     else:
         cname = sys.argv[1]
 

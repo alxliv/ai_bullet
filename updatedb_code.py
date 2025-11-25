@@ -261,7 +261,7 @@ def update_code_collection(db_client, name, full_path):
 
     code_chunks = walk_repo_and_chunk(full_path)
     print(f"All {len(code_chunks)} chunks from {full_path} collected.")
- 
+
     existing = get_existing_ids(collection)
     already_seen = set(existing)
     records = list(prepare_records(code_chunks))
@@ -279,7 +279,7 @@ def main():
         print("Usage:")
         print("  python updatedb_code.py <collection name>")
         print(f"  Valid names are: {valid_names}")
-        cname = "BASECODE"
+        return
     else:
         cname = sys.argv[1]
 
