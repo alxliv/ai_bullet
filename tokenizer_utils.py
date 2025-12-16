@@ -52,6 +52,7 @@ TOKENIZER_MAP = {
     "qwen3:4b-instruct": "./tokenizers/qwen",
     "qwen2.5": "./tokenizers/qwen",
     "qwen": "./tokenizers/qwen",
+    "gpt-oss:20b": "./tokenizers/gpt-oss"
     # Add more models as needed
 }
 

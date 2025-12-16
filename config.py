@@ -2,7 +2,7 @@
 import os
 from enum import Enum
 
-USE_OPENAI = True
+USE_OPENAI = False
 
 if USE_OPENAI:
     EMBEDDING_MODEL = 'text-embedding-3-small'  # Or other model like "text-embedding-ada-002"
@@ -10,8 +10,9 @@ if USE_OPENAI:
     CHROMA_DB_DIR = 'chroma_store_gpt4o/'
 else:
     EMBEDDING_MODEL = 'nomic-embed-text'  # Local embedding model served by Ollama
-    LLM_DEFAULT_MODEL = "qwen3:4b-instruct-2507-fp16"
-    CHROMA_DB_DIR = 'chroma_store_qwen3/'
+    LLM_DEFAULT_MODEL = "gpt-oss:20b"
+    CHROMA_DB_DIR = 'chroma_store_gptoss/'
+#    CHROMA_DB_DIR = 'chroma_store_qwen3/'
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 

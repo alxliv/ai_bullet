@@ -6,7 +6,7 @@ from typing import List, Optional
 import httpx
 import time
 
-Verbose=True
+Verbose=False
 
 from config import (
     EMBEDDING_MODEL,

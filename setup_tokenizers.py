@@ -5,7 +5,8 @@ def download_tokenizers():
     """Download all required tokenizers to local directories."""
 
     tokenizers_to_download = [
-        ("Qwen/Qwen2.5-Coder-7B-Instruct", "./tokenizers/qwen"),
+#        ("Qwen/Qwen2.5-Coder-7B-Instruct", "./tokenizers/qwen"),
+        ("openai/gpt-oss-20b", "./tokenizers/gpt-oss")
         # Add more as needed
     ]
 
