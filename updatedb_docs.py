@@ -33,9 +33,9 @@ from chromadb_shim import chromadb
 load_dotenv()
 
 # Character-based chunk size for documents
-# Smaller chunks for docs to get better semantic coherence
-MAX_CHUNK_CHARS = 4000   # ~1000 tokens, good for semantic search
-OVERLAP_CHARS = 400      # ~100 tokens overlap
+# mxbai-embed-large has only 512 token context, extremely restrictive
+MAX_CHUNK_CHARS = 350    # Ultra-conservative for mxbai-embed-large
+OVERLAP_CHARS = 35       # Small overlap
 
 SUPPORTED_EXTS = {".pdf", ".docx", ".md", ".markdown", ".txt"}
 

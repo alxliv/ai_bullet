@@ -550,9 +550,12 @@ def _demo_cli():  # pragma: no cover
 #        q = "Explain position based dynamics"
 #        q = "Write vertex shader for per pixel lighting of a single omni plus ambient"
 #        q = "What are some Helpful Lies about Our Universe?"
-#        q = "What is ChunkUtils class?"
+        q = "What is ChunkUtils class?"
 #        q = "Who is Alex?"
-        q = "What is bChunkPtr8 class?"
+#        q = "What is bChunkPtr8 class?"
+#        q = "Explain initRecurseCmpFlags function"
+#        q = "Who is the great coder?"
+#        q = "Describe AlexIsTheGreat function"
     print("\n--- Question: ---")
     print(q)
     answer, sources = ask_llm(q, retr)

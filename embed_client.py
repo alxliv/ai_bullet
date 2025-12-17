@@ -64,6 +64,16 @@ class EmbedClientUni:
                 raise RuntimeError("OpenAI embedding response is not a list of floats")
         else:
             payload = {"model": self._ollama_model, "prompt": text}
+# GEMINI recommends adding options to explicitely define num_ctx when snowflake run under Ollama
+# Also to use modern /embed endpoint with input='gdfg' instead of prompt='fsdfsf'
+            # payload = {
+            #     'model' :'snowflake-arctic-embed2',
+            #     'input': text,
+            #     'options' : {
+            #         'num_ctx': 8192,  # Unlocks full 32k char capacity
+            #         'truncate': True
+            #     }
+            # }
             response = self._client.post("/api/embeddings", json=payload)
             response.raise_for_status()
             data = response.json()

@@ -7,11 +7,11 @@ USE_OPENAI = False
 if USE_OPENAI:
     EMBEDDING_MODEL = 'text-embedding-3-small'  # Or other model like "text-embedding-ada-002"
     LLM_DEFAULT_MODEL = "gpt-4o-mini"
-    CHROMA_DB_DIR = 'chroma_store_gpt4o/'
+    CHROMA_DB_DIR = 'chroma_store_openai/'
 else:
-    EMBEDDING_MODEL = 'nomic-embed-text'  # Local embedding model served by Ollama
+    EMBEDDING_MODEL = 'snowflake-arctic-embed2'  # Local embedding model served by Ollama
     LLM_DEFAULT_MODEL = "gpt-oss:20b"
-    CHROMA_DB_DIR = 'chroma_store_nomic/'
+    CHROMA_DB_DIR = 'chroma_store_snowflake2/'
 #    CHROMA_DB_DIR = 'chroma_store_qwen3/'
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)

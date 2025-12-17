@@ -18,16 +18,17 @@ from embed_client import EmbedClientUni
 MAX_EMBED_RETRIES = 3
 RETRY_INITIAL_DELAY = 0.2  # seconds
 RETRY_MAX_DELAY = 5.0      # seconds
-MIN_RETRY_CHARS = 2000     # Minimum chars before we try splitting
+MIN_RETRY_CHARS = 4000      # Minimum chars before we try splitting
 
 # Character-based limits for embedding models
-# nomic-embed-text: 8192 tokens, but chars/token varies (1.5-4 depending on content)
-# text-embedding-3-small: 8191 tokens
+# mxbai-embed-large: 512 tokens - extremely restrictive (~1 char/token worst case for code)
+# nomic-embed-text: 8192 tokens context - RECOMMENDED for RAG
+# text-embedding-3-small: 8191 tokens context
 # Using conservative limits to handle worst-case tokenization
 if USE_OPENAI:
     MAX_EMBED_CHARS = 24000   # Safe limit for OpenAI embedding models
 else:
-    MAX_EMBED_CHARS = 2000   # Conservative limit for nomic-embed-text (~2 chars/token worst case)
+    MAX_EMBED_CHARS = 4000
 
 embed_client = EmbedClientUni(use_openai = USE_OPENAI)
 
@@ -272,6 +273,7 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
 
     batch_records = []
     batch_embeddings = []
+    total_records = 0
 
     def flush_batch():
         nonlocal total_pending
@@ -289,6 +291,9 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
 
     while queue:
         record = queue.popleft()
+        if (record['id'] == 'b3Chunk.h:68-71-90e40ca4'):
+            print("!")
+
         text = record["text"]
         text_len = len(text)
 
@@ -324,10 +329,14 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
                 queue.appendleft(nr)
             total_pending += len(new_records) - 1
             continue
-
+        total_records +=1
         # Add to batch
         batch_records.append(record)
         batch_embeddings.append(embedding)
+        if len(batch_records) >=1000:
+            if verbose:
+                print(f"Embedded {total_records} records.")
+            flush_batch()
 
     # Flush remaining batch
     flush_batch()
