@@ -11,7 +11,7 @@ if USE_OPENAI:
 else:
     EMBEDDING_MODEL = 'nomic-embed-text'  # Local embedding model served by Ollama
     LLM_DEFAULT_MODEL = "gpt-oss:20b"
-    CHROMA_DB_DIR = 'chroma_store_gptoss/'
+    CHROMA_DB_DIR = 'chroma_store_nomic/'
 #    CHROMA_DB_DIR = 'chroma_store_qwen3/'
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
@@ -31,7 +31,8 @@ GLOBAL_RAGDATA_MAP = {
     "TESTS":    ("D:/AL_KB/rag_data/sources/tests",    RAGType.SRC),
     "NOTES":    ("D:/AL_KB/rag_data/notes",            RAGType.DOC),
     "DOCS":     ("D:/AL_KB/rag_data/docs",             RAGType.DOC),
-    "ARTICLES": ("D:/AL_KB/rag_data/articles",         RAGType.DOC)
+    "ARTICLES": ("D:/AL_KB/rag_data/articles",         RAGType.DOC),
+    "MINCODE": ("D:/AL_KB/rag_data/sources/code_min", RAGType.SRC),
 
 }
 
@@ -51,6 +52,8 @@ GLOBAL_RAGDATA_MAP = {
 #   - Wildcards: "test_*.cpp", "*_generated.h", "*.test.cpp"
 IGNORE_FILES = {
     "landscapeData.h",      # Large landscape data file
+    "b3Serializer.cpp",
+    "bullet2.h"
     # Add more files to ignore here:
     # "test_*.cpp",         # Ignore all test files starting with test_
     # "*_generated.h",      # Ignore all generated header files
@@ -68,6 +71,13 @@ QUERY_EXAMPLES = [
         "How to compute the object AABBs?",
         "What types of constraints are available in Bullet3 and how do I create a hinge joint?"
 ]
+
+
+def get_collection_type(collection_name):
+    for key, (_, rag_type) in GLOBAL_RAGDATA_MAP.items():
+        if collection_name.upper() == key.upper():
+            return rag_type.value
+    return "UNKNOWN"
 
 # Telemetry configuration for ChromaDB
 ANONYMIZED_TELEMETRY = False

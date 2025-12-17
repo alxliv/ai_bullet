@@ -20,27 +20,7 @@ os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ["CHROMA_TELEMETRY"] = "false"
 
 from chromadb_shim import chromadb
-
-try:
-    from config import CHROMA_DB_DIR, GLOBAL_RAGDATA_MAP, RAGType
-except ImportError:
-    CHROMA_DB_DIR = "chroma_store_qwen3/"
-    GLOBAL_RAGDATA_MAP = {}
-    from enum import Enum
-    class RAGType(str, Enum):
-        DOC = "doc"
-        SRC = "src"
-
-
-def get_collection_type(collection_name):
-    """Determine collection type (CODE/DOC) from collection name."""
-    # Check if collection name matches any key in GLOBAL_RAGDATA_MAP
-    for key, (_, rag_type) in GLOBAL_RAGDATA_MAP.items():
-        if collection_name.upper() == key.upper():
-            return rag_type.value
-
-    return "UNKNOWN"
-
+from config import CHROMA_DB_DIR, GLOBAL_RAGDATA_MAP, RAGType, get_collection_type
 
 def get_client():
     """Get ChromaDB client."""

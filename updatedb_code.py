@@ -1,33 +1,31 @@
 import os
 import sys
 from dotenv import load_dotenv
-from config import CHROMA_DB_DIR, EMBEDDING_MODEL, IGNORE_FILES, USE_OPENAI
-from path_utils import encode_path
-from tokenizer_utils import count_tokens, split_by_tokens
-from updatedb_helper import embed_record_with_retry, uniquify_records, short_hash, token_len, get_existing_ids, embed_and_add
-from chromadb_shim import chromadb
-from collections import deque
-import lizard
 from pathlib import Path
 
+import tree_sitter_cpp as tscpp
+from tree_sitter import Language, Parser
+
+from chromadb_shim import chromadb
 from config import (
     CHROMA_DB_DIR,
-    EMBEDDING_MODEL,
-    OLLAMA_BASE_URL,
+    IGNORE_FILES,
     GLOBAL_RAGDATA_MAP,
     RAGType,
+)
+from path_utils import encode_path
+from updatedb_helper import (
+    uniquify_records,
+    short_hash,
+    get_existing_ids,
+    embed_and_add,
 )
 
 load_dotenv()
 
-# Optimized for Qwen3-4B (256K context window)
-# See TOKEN_LIMITS_GUIDE.md for rationale
-if USE_OPENAI:
-    MAX_ITEM_TOKENS   = 1200           # Handles larger functions/classes with context
-    MAX_REQUEST_TOKENS= 6000           # Larger batches for structured code
-else:
-    MAX_ITEM_TOKENS   = 3000           # Handles larger functions/classes with context
-    MAX_REQUEST_TOKENS= 12000          # Larger batches for structured code
+# Initialize tree-sitter parser for C++
+CPP_LANGUAGE = Language(tscpp.language())
+cpp_parser = Parser(CPP_LANGUAGE)
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
@@ -35,20 +33,39 @@ CPP_EXTS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".hxx"}
 
 
 
+def _is_separator_comment(line: str) -> bool:
+    """Check if a line is a separator comment like // -------- or // ========."""
+    stripped = line.strip()
+    if not stripped.startswith("//"):
+        return False
+    # Get content after //
+    content = stripped[2:].strip()
+    # Check if it's mostly separator characters (dashes, equals, asterisks, etc.)
+    if len(content) >= 3 and all(ch in '-=*#~_' for ch in content):
+        return True
+    return False
+
+
 def grab_leading_comment(lines, start_idx, max_gap=2):
     """
     Walk upward from start_idx-1 to collect a contiguous block of comments
     separated from code by <= max_gap blank lines.
+    Ignores separator comments like // -------- or // ========.
     """
     i = start_idx - 1
     collected = []
     blanks = 0
     while i >= 0:
         line = lines[i].rstrip()
-        if line.strip().startswith("//") or "/*" in line:
+        stripped = line.strip()
+        if stripped.startswith("//") or "/*" in stripped:
+            # Skip separator comments
+            if _is_separator_comment(line):
+                i -= 1
+                continue
             collected.append(lines[i])
             blanks = 0
-        elif line.strip() == "":
+        elif stripped == "":
             blanks += 1
             if blanks > max_gap:
                 break
@@ -61,6 +78,128 @@ def grab_leading_comment(lines, start_idx, max_gap=2):
 
 def slice_lines(lines, start, end):
     return "\n".join(lines[start-1:end])
+
+def _is_license_comment_block(text: str) -> bool:
+    """Check if a text block is a license/copyright header comment."""
+    lower = text.lower()
+
+    # Keywords that indicate a license/copyright block
+    license_keywords = [
+        'copyright', 'license', 'licensed', 'all rights reserved',
+        'permission is hereby granted', 'permission is granted',
+        'software is provided', 'provided "as is"', "provided 'as-is'",
+        'without warranty', 'express or implied',
+        'in no event shall', 'authors be held liable',
+        'redistribute', 'modification', 'sublicense',
+        'apache license', 'mit license', 'bsd license', 'gpl',
+        'gnu general public', 'lgpl', 'mozilla public license',
+        'creative commons', 'public domain',
+        'this file is part of', 'originally written by',
+        'spdx-license-identifier',
+    ]
+
+    # Count how many license keywords appear
+    keyword_count = sum(1 for kw in license_keywords if kw in lower)
+
+    # If multiple license keywords found, it's likely a license block
+    if keyword_count >= 2:
+        return True
+
+    # Single 'copyright' with year pattern is also a license header
+    if 'copyright' in lower:
+        import re
+        if re.search(r'copyright\s*(?:\(c\)|©)?\s*\d{4}', lower):
+            return True
+
+    return False
+
+
+def _strip_license_blocks(block_text: str) -> str:
+    """
+    Remove entire license/copyright comment blocks from text.
+
+    Detects and removes:
+    - Block comments (/* ... */) containing license text
+    - Consecutive line comments (// ...) forming a license header
+    - Mixed comment styles at file start
+    """
+    if not block_text:
+        return block_text
+
+    lines = block_text.splitlines(keepends=True)
+    if not lines:
+        return block_text
+
+    result_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Check for block comment start /*
+        if stripped.startswith('/*'):
+            # Collect entire block comment
+            block_lines = [line]
+            # Check if it closes on the same line
+            if '*/' in stripped[2:]:
+                block_text_chunk = ''.join(block_lines)
+                if _is_license_comment_block(block_text_chunk):
+                    i += 1
+                    continue
+                else:
+                    result_lines.append(line)
+                    i += 1
+                    continue
+
+            # Multi-line block comment
+            i += 1
+            while i < len(lines):
+                block_lines.append(lines[i])
+                if '*/' in lines[i]:
+                    break
+                i += 1
+
+            block_text_chunk = ''.join(block_lines)
+            if not _is_license_comment_block(block_text_chunk):
+                result_lines.extend(block_lines)
+            i += 1
+            continue
+
+        # Check for consecutive line comments that might be a license header
+        if stripped.startswith('//'):
+            comment_lines = [line]
+            j = i + 1
+            while j < len(lines):
+                next_stripped = lines[j].strip()
+                if next_stripped.startswith('//') or next_stripped == '':
+                    comment_lines.append(lines[j])
+                    j += 1
+                else:
+                    break
+
+            comment_text = ''.join(comment_lines)
+            if _is_license_comment_block(comment_text):
+                i = j
+                continue
+            else:
+                result_lines.append(line)
+                i += 1
+                continue
+
+        # Check for separator lines (all dashes, equals, asterisks)
+        if stripped and len(stripped) >= 3 and all(ch in '-=*#' for ch in stripped):
+            # Skip separator lines only if we haven't added any real content yet
+            if not any(l.strip() and not l.strip().startswith(('//', '/*', '*'))
+                      for l in result_lines):
+                i += 1
+                continue
+
+        result_lines.append(line)
+        i += 1
+
+    return ''.join(result_lines)
+
 
 def build_leftover_chunks(lines, used_spans, file_path):
     """Anything not covered by functions becomes its own chunk (contiguous blocks)."""
@@ -79,7 +218,12 @@ def build_leftover_chunks(lines, used_spans, file_path):
         j = i
         while j <= n and not covered[j]:
             j += 1
-        text = slice_lines(lines, i, j-1)
+        text = _strip_license_blocks(slice_lines(lines, i, j-1))
+        # Remove comment lines with separator dashes (e.g., //----, /*----)
+        text = '\n'.join(
+            line for line in text.splitlines()
+            if not (line.lstrip().startswith(('//', '/*')) and '----' in line)
+        )
         if text.strip():
             cid = f"{Path(file_path).name}:{i}-{j-1}-{short_hash(text)}"
             chunks.append({
@@ -95,48 +239,221 @@ def build_leftover_chunks(lines, used_spans, file_path):
         i = j
     return chunks
 
-def extract_chunks_with_lizard(path, include_comments=True):
-    """Return list[{id,text,metadata}] for a single file."""
+def get_node_name(node, source_bytes):
+    """Extract the name identifier from a tree-sitter node."""
+    # For function_definition, look for declarator -> identifier
+    # For class/struct/enum, look for name child
+
+    if node.type == 'function_definition':
+        # Navigate: function_definition -> declarator -> ... -> identifier
+        declarator = node.child_by_field_name('declarator')
+        if declarator:
+            return _find_identifier_in_declarator(declarator, source_bytes)
+
+    elif node.type in ('class_specifier', 'struct_specifier'):
+        # Look for name field
+        name_node = node.child_by_field_name('name')
+        if name_node:
+            return source_bytes[name_node.start_byte:name_node.end_byte].decode('utf-8', errors='ignore')
+
+    elif node.type == 'enum_specifier':
+        # Look for name field
+        name_node = node.child_by_field_name('name')
+        if name_node:
+            return source_bytes[name_node.start_byte:name_node.end_byte].decode('utf-8', errors='ignore')
+
+    return None
+
+
+def _find_identifier_in_declarator(node, source_bytes):
+    """Recursively find the identifier name in a declarator."""
+    if node.type == 'identifier':
+        return source_bytes[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+
+    if node.type == 'field_identifier':
+        return source_bytes[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+
+    # Handle qualified identifiers (e.g., ClassName::methodName)
+    if node.type == 'qualified_identifier':
+        name_node = node.child_by_field_name('name')
+        if name_node:
+            return source_bytes[node.start_byte:node.end_byte].decode('utf-8', errors='ignore')
+
+    # Handle function declarators
+    if node.type == 'function_declarator':
+        declarator = node.child_by_field_name('declarator')
+        if declarator:
+            return _find_identifier_in_declarator(declarator, source_bytes)
+
+    # Handle pointer/reference declarators
+    if node.type in ('pointer_declarator', 'reference_declarator'):
+        declarator = node.child_by_field_name('declarator')
+        if declarator:
+            return _find_identifier_in_declarator(declarator, source_bytes)
+
+    # Handle parenthesized declarators
+    if node.type == 'parenthesized_declarator':
+        for child in node.children:
+            result = _find_identifier_in_declarator(child, source_bytes)
+            if result:
+                return result
+
+    # Fallback: search children
+    for child in node.children:
+        result = _find_identifier_in_declarator(child, source_bytes)
+        if result:
+            return result
+
+    return None
+
+
+def get_function_parameters(node, source_bytes):
+    """Extract parameter list from a function definition."""
+    declarator = node.child_by_field_name('declarator')
+    if not declarator:
+        return []
+
+    # Find the function_declarator
+    func_decl = None
+    if declarator.type == 'function_declarator':
+        func_decl = declarator
+    else:
+        # Search for function_declarator in children
+        for child in declarator.children:
+            if child.type == 'function_declarator':
+                func_decl = child
+                break
+            # Handle pointer/reference declarators
+            if child.type in ('pointer_declarator', 'reference_declarator'):
+                for subchild in child.children:
+                    if subchild.type == 'function_declarator':
+                        func_decl = subchild
+                        break
+
+    if not func_decl:
+        return []
+
+    params = func_decl.child_by_field_name('parameters')
+    if not params:
+        return []
+
+    param_list = []
+    for child in params.children:
+        if child.type == 'parameter_declaration':
+            # Get the declarator name if present
+            decl = child.child_by_field_name('declarator')
+            if decl:
+                name = _find_identifier_in_declarator(decl, source_bytes)
+                if name:
+                    param_list.append(name)
+
+    return param_list
+
+def read_code_file(path):
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()
+        cleaned_lines = []
+        seen_blank = False
+        for line in lines:
+            if line == "\n":
+                if seen_blank:
+                    continue
+                seen_blank = True
+            else:
+                seen_blank = False
+            cleaned_lines.append(line)
+        while cleaned_lines and cleaned_lines[-1] == "\n":
+            cleaned_lines.pop()
+        if cleaned_lines:
+            cleaned_lines[-1] = cleaned_lines[-1].rstrip("\n")
+        lines = cleaned_lines
+    return lines
+
+def extract_chunks_with_treesitter(path, include_comments=True):
+    """
+    Return list[{id,text,metadata}] for a single file using tree-sitter.
+
+    Extracts the following node types:
+    - function_definition
+    - class_specifier
+    - struct_specifier
+    - enum_specifier
+    """
+    TARGET_TYPES = {'function_definition', 'class_specifier', 'struct_specifier', 'enum_specifier'}
+
+    lines = read_code_file(path)
     src = "".join(lines)
+    source_bytes = src.encode('utf-8')
 
     try:
-        res = lizard.analyze_file(path)
+        tree = cpp_parser.parse(source_bytes)
     except Exception as e:
-        print(f"[Lizard] Failed to analyze {path}: {e}")
+        print(f"[tree-sitter] Failed to parse {path}: {e}")
         return []
 
     chunks = []
     spans = []
-    for fn in res.function_list:
-        sl, el = fn.start_line, fn.end_line
-        body_lines = lines[sl-1:el]
-        comment_lines = grab_leading_comment(lines, sl) if include_comments else []
-        text = "".join(comment_lines + body_lines)
-        if 'Copyright' in text:
-            continue
 
-        cid = f"{Path(path).name}:{sl}-{el}-{short_hash(text)}"
-        chunks.append({
-            "id": cid,
-            "text": text,
-            "metadata": {
+    # Walk the tree to find target nodes
+    def visit(node):
+        if node.type in TARGET_TYPES:
+            # Get line numbers (tree-sitter uses 0-based, convert to 1-based)
+            sl = node.start_point[0] + 1
+            el = node.end_point[0] + 1
+
+            # Extract the node text
+            body_lines = lines[sl-1:el]
+            comment_lines = grab_leading_comment(lines, sl-1) if include_comments else []
+            text = "".join(comment_lines + body_lines)
+
+            # Get node name
+            name = get_node_name(node, source_bytes) or "anonymous"
+
+            # Map tree-sitter types to our node_type names
+            node_type_map = {
+                'function_definition': 'function',
+                'class_specifier': 'class',
+                'struct_specifier': 'struct',
+                'enum_specifier': 'enum'
+            }
+            node_type = node_type_map.get(node.type, node.type)
+
+            # Build metadata
+            metadata = {
                 "file_path": encode_path(path),
                 "start_line": sl,
                 "end_line": el,
-                "name": fn.name,
-                "long_name": fn.long_name,
-                "cyclomatic_complexity": fn.cyclomatic_complexity,
-                "nloc": fn.nloc,
-                "parameter_count": len(fn.parameters),
-                "parameters": ",".join(fn.parameters) if fn.parameters else "",
-                "node_type": "function"
+                "name": name,
+                "node_type": node_type
             }
-        })
-        spans.append((sl, el))
 
-    # Add non-function regions (classes, typedefs, etc.)
+            # Add function-specific metadata
+            if node.type == 'function_definition':
+                params = get_function_parameters(node, source_bytes)
+                metadata["parameter_count"] = len(params)
+                metadata["parameters"] = ",".join(params) if params else ""
+                # Build long_name similar to lizard format
+                metadata["long_name"] = f"{name}({', '.join(params)})"
+
+            cid = f"{Path(path).name}:{sl}-{el}-{short_hash(text)}"
+            chunks.append({
+                "id": cid,
+                "text": text,
+                "metadata": metadata
+            })
+            spans.append((sl, el))
+
+            # Don't recurse into this node's children for nested definitions
+            # (e.g., methods inside classes are handled separately)
+            return
+
+        # Recurse into children
+        for child in node.children:
+            visit(child)
+
+    visit(tree.root_node)
+
+    # Add non-covered regions (global variables, typedefs, etc.)
     leftovers = build_leftover_chunks(lines, spans, path)
     chunks.extend(leftovers)
 
@@ -214,9 +531,12 @@ def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
 
             # Check if it's a C/C++ file
             if os.path.splitext(name)[1].lower() in CPP_EXTS:
+                if ("b3Chunk.h" in name):
+                    print("b3Chunk!")
+
                 p = os.path.join(dirpath, name)
                 try:
-                    chunks = extract_chunks_with_lizard(p)
+                    chunks = extract_chunks_with_treesitter(p)
                     all_chunks.extend(chunks)
                     count += 1
                     total_files_processed += 1
@@ -236,36 +556,20 @@ def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
 
 # --- ID helpers --------------------------------------------------------------
 
-def prepare_records(chunks):
-    """Yield records, splitting any text that exceeds MAX_ITEM_TOKENS."""
-    nrec = 0
-    for c in chunks:
-        nrec += 1
-        print(f"prepare_record #{nrec} out of {len(chunks)}")
-        base_id = c["id"]
-        txt = c["text"]
-        if token_len(txt) <= MAX_ITEM_TOKENS:
-            yield c  # keep original id
-        else:
-            pieces = split_by_tokens(txt, MAX_ITEM_TOKENS)
-            for idx, piece in enumerate(pieces):
-                new_id = f"{base_id}#p{idx}-{short_hash(piece)}"
-                meta = dict(c["metadata"])
-                meta.update({"piece_index": idx, "piece_count": len(pieces)})
-                yield {"id": new_id, "text": piece, "metadata": meta}
-
 
 def update_code_collection(db_client, name, full_path):
     print(f"Updating code collection {name}")
-    collection = db_client.get_or_create_collection(name)
+    collection = db_client.get_or_create_collection(
+        name,
+        metadata={"hnsw:space": "cosine"}
+)
 
     code_chunks = walk_repo_and_chunk(full_path)
     print(f"All {len(code_chunks)} chunks from {full_path} collected.")
 
     existing = get_existing_ids(collection)
     already_seen = set(existing)
-    records = list(prepare_records(code_chunks))
-    uniq_records = uniquify_records(records, already_seen=already_seen)
+    uniq_records = uniquify_records(code_chunks, already_seen=already_seen)
 
     embed_and_add(uniq_records, collection)
     print("Done.")
@@ -279,7 +583,8 @@ def main():
         print("Usage:")
         print("  python updatedb_code.py <collection name>")
         print(f"  Valid names are: {valid_names}")
-        return
+        cname = "MINCODE"
+#        return
     else:
         cname = sys.argv[1]
 

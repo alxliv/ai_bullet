@@ -3,7 +3,7 @@
 updatedb_docs.py
 ===========
 Walk a DOCS directory, extract text from PDF / DOCX / Markdown (and plain .txt),
-chunk it with token-aware splits, embed with OpenAI, and store in a ChromaDB
+chunk it with character-aware splits, embed, and store in a ChromaDB
 collection (e.g. "all_documents"), avoiding duplicate IDs and oversize requests.
 
 """
@@ -11,13 +11,9 @@ from __future__ import annotations
 import os
 import sys
 import re
-import math
-import json
-import hashlib
-import argparse
 from pypdf import PdfReader
 import docx
-from typing import List, Dict, Any, Iterable, Tuple, Optional
+from typing import List, Dict, Any, Iterable, Tuple
 from config import (
     CHROMA_DB_DIR,
     GLOBAL_RAGDATA_MAP,
@@ -25,19 +21,23 @@ from config import (
 )
 from dotenv import load_dotenv
 from path_utils import encode_path
-from tokenizer_utils import split_by_tokens, encode as encode_tokens, decode as decode_tokens
 from updatedb_helper import (
-    uniquify_records, token_len, short_hash,
+    uniquify_records,
+    short_hash,
     get_existing_ids,
-    MAX_ITEM_TOKENS, MAX_REQUEST_TOKENS,
-    embed_and_add
+    embed_and_add,
+    split_by_chars,
 )
 from chromadb_shim import chromadb
 
 load_dotenv()
 
+# Character-based chunk size for documents
+# Smaller chunks for docs to get better semantic coherence
+MAX_CHUNK_CHARS = 4000   # ~1000 tokens, good for semantic search
+OVERLAP_CHARS = 400      # ~100 tokens overlap
 
-SUPPORTED_EXTS = {".pdf", ".docx", ".md", ".markdown", ".txt"}  # add more if needed
+SUPPORTED_EXTS = {".pdf", ".docx", ".md", ".markdown", ".txt"}
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
@@ -78,61 +78,49 @@ def read_docx(path: str) -> str:
 
 # ------------- Chunk builders -------------
 
-def chunk_text_generic(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS, overlap_tokens: int = 100) -> Iterable[Dict[str, Any]]:
-    """Token slide window for generic/plaintext content."""
-    try:
-        toks = encode_tokens(text)
-    except RuntimeError:
-        toks = None
-
-    if toks is None:
-        # naive char-based fallback
-        step = max_tokens * 4
-        for i in range(0, len(text), step - overlap_tokens * 4):
-            piece = text[i:i+step]
-            cid = f"{path}:char{i}-{i+len(piece)}-{short_hash(piece)}"
-            yield {
-                "id": cid,
-                "text": piece,
-                "metadata": {
-                    "file_path": encode_path(path),
-                    "start_char": i,
-                    "end_char": i + len(piece),
-                    "source_type": "doc",
-                },
-            }
+def chunk_text_generic(
+    text: str,
+    path: str,
+    max_chars: int = MAX_CHUNK_CHARS,
+    overlap_chars: int = OVERLAP_CHARS
+) -> Iterable[Dict[str, Any]]:
+    """Character-based sliding window for generic/plaintext content."""
+    if not text.strip():
         return
 
-    step = max_tokens
-    ov   = overlap_tokens
-    for i in range(0, len(toks), step - ov):
-        piece_toks = toks[i:i+step]
-        try:
-            piece = decode_tokens(piece_toks)
-        except RuntimeError:
-            # Fallback if decode fails
-            piece = text[i*4:(i+len(piece_toks))*4]
-        cid = f"{path}:tok{i}-{i+len(piece_toks)}-{short_hash(piece)}"
+    stride = max(1, max_chars - overlap_chars)
+
+    for start in range(0, len(text), stride):
+        piece = text[start:start + max_chars].strip()
+        if not piece:
+            continue
+        end = start + len(piece)
+        cid = f"{path}:char{start}-{end}-{short_hash(piece)}"
         yield {
             "id": cid,
             "text": piece,
             "metadata": {
                 "file_path": encode_path(path),
-                "start_token": i,
-                "end_token": i + len(piece_toks),
+                "start_char": start,
+                "end_char": end,
                 "source_type": "doc",
             },
         }
 
-def chunk_markdown(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS) -> Iterable[Dict[str, Any]]:
-    """Split on top-level headings (#, ##, ###) first, then token-split."""
-    blocks = re.split(r"^(?=#)" , text, flags=re.MULTILINE)  # keep headings at block start
+
+def chunk_markdown(
+    text: str,
+    path: str,
+    max_chars: int = MAX_CHUNK_CHARS
+) -> Iterable[Dict[str, Any]]:
+    """Split on top-level headings (#, ##, ###) first, then char-split if needed."""
+    blocks = re.split(r"^(?=#)", text, flags=re.MULTILINE)
     for idx, block in enumerate(blocks):
         block = block.strip()
         if not block:
             continue
-        # further token-split if needed
-        pieces = [block] if token_len(block) <= max_tokens else split_by_tokens(block, max_tokens)
+        # further char-split if needed
+        pieces = [block] if len(block) <= max_chars else split_by_chars(block, max_chars)
         for j, piece in enumerate(pieces):
             cid = f"{path}:md{idx}-{j}-{short_hash(piece)}"
             yield {
@@ -151,110 +139,35 @@ def chunk_markdown(text: str, path: str, max_tokens: int = MAX_ITEM_TOKENS) -> I
 def chunk_pdf_pages(
     pages: List[Tuple[int, List[str]]],
     path: str,
-    max_tokens: int = MAX_ITEM_TOKENS,
-    overlap_tokens: int = 100,
+    max_chars: int = MAX_CHUNK_CHARS,
+    overlap_chars: int = OVERLAP_CHARS,
 ) -> Iterable[Dict[str, Any]]:
-    """Token-based PDF chunker with overlap to preserve context."""
-
-    token_stride = max(1, max_tokens - overlap_tokens)
-
-    def _char_chunks(page_text: str) -> Iterable[Tuple[str, int, int]]:
-        """Fallback slicer when tokenization fails."""
-        char_window = max_tokens * 4
-        char_stride = max(1, char_window - overlap_tokens * 4)
-        for start in range(0, len(page_text), char_stride):
-            piece = page_text[start:start + char_window].strip()
-            if not piece:
-                continue
-            end = start + len(piece)
-            yield piece, start, end
+    """Character-based PDF chunker with overlap to preserve context."""
+    stride = max(1, max_chars - overlap_chars)
 
     for page_no, lines in pages:
         page_text = "\n".join(lines).strip()
         if not page_text:
             continue
 
-        try:
-            tokens = encode_tokens(page_text)
-        except RuntimeError:
-            for piece, start_char, end_char in _char_chunks(page_text):
-                cid = f"{path}:p{page_no}-char{start_char}-{end_char}-{short_hash(piece)}"
-                yield {
-                    "id": cid,
-                    "text": piece,
-                    "metadata": {
-                        "file_path": encode_path(path),
-                        "source_type": "doc",
-                        "format": "pdf",
-                        "page_number": page_no,
-                        "start_char": start_char,
-                        "end_char": end_char,
-                    },
-                }
-            continue
-
-        if not tokens:
-            continue
-
-        for start in range(0, len(tokens), token_stride):
-            window = tokens[start:start + max_tokens]
-            if not window:
+        for start in range(0, len(page_text), stride):
+            piece = page_text[start:start + max_chars].strip()
+            if not piece:
                 continue
-            try:
-                chunk_text = decode_tokens(window)
-            except RuntimeError:
-                chunk_text = page_text
-            end_token = start + len(window)
-            cid = f"{path}:p{page_no}-tok{start}-{end_token}-{short_hash(chunk_text)}"
+            end = start + len(piece)
+            cid = f"{path}:p{page_no}-char{start}-{end}-{short_hash(piece)}"
             yield {
                 "id": cid,
-                "text": chunk_text,
+                "text": piece,
                 "metadata": {
                     "file_path": encode_path(path),
                     "source_type": "doc",
                     "format": "pdf",
                     "page_number": page_no,
-                    "start_token": start,
-                    "end_token": end_token,
+                    "start_char": start,
+                    "end_char": end,
                 },
             }
-
-
-# ------------- Batching / embedding -------------
-
-def batch_by_token_budget(records: List[Dict[str, Any]], max_req_tokens: int = MAX_REQUEST_TOKENS) -> List[List[Dict[str, Any]]]:
-    """Split records into batches that fit within token budget. Returns list of batches."""
-    batches = []
-    batch = []
-    used = 0
-
-    for r in records:
-        tl = token_len(r["text"])
-        if tl > MAX_ITEM_TOKENS:
-            # Split oversized record into smaller pieces
-            for piece in split_by_tokens(r["text"], MAX_ITEM_TOKENS):
-                # Create new record with split text piece
-                new_id = f"{r['id']}#r{short_hash(piece)}"
-                new_record = r.copy()
-                new_record["id"] = new_id
-                new_record["text"] = piece
-                # Recursively batch the split pieces
-                batches.extend(batch_by_token_budget([new_record], max_req_tokens))
-            continue
-
-        if batch and used + tl > max_req_tokens:
-            # Current batch is full, start new one
-            batches.append(batch)
-            batch, used = [r], tl
-        else:
-            # Add to current batch
-            batch.append(r)
-            used += tl
-
-    if batch:
-        batches.append(batch)
-
-    return batches
 
 
 # ------------- Main pipeline -------------
@@ -299,7 +212,10 @@ def walk_docs(root_dir: str) -> List[Dict[str, Any]]:
 
 def update_docs_collection(db_client, name, full_path):
     print(f"Updating docs collection {name}")
-    col = db_client.get_or_create_collection(name)
+    col = db_client.get_or_create_collection(
+        name,
+        metadata={"hnsw:space": "cosine"}
+    )
 
     records = walk_docs(full_path)
     print(f"Found {len(records)} records in total")

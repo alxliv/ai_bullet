@@ -9,40 +9,27 @@ Provides robust embedding with retry logic, exponential backoff, and automatic s
 import time
 import httpx
 from typing import Dict, Any, List, Tuple, Optional, Set
-from tokenizer_utils import count_tokens, split_by_tokens
 from collections import defaultdict
 import hashlib
-from config import (
-    USE_OPENAI,
-)
+from config import USE_OPENAI
 from embed_client import EmbedClientUni
 
 # Retry configuration
 MAX_EMBED_RETRIES = 3
 RETRY_INITIAL_DELAY = 0.2  # seconds
 RETRY_MAX_DELAY = 5.0      # seconds
-MIN_RETRY_TOKENS = 512     # Minimum tokens before we try splitting
+MIN_RETRY_CHARS = 2000     # Minimum chars before we try splitting
 
+# Character-based limits for embedding models
+# nomic-embed-text: 8192 tokens, but chars/token varies (1.5-4 depending on content)
+# text-embedding-3-small: 8191 tokens
+# Using conservative limits to handle worst-case tokenization
 if USE_OPENAI:
-    MAX_ITEM_TOKENS     = 900    # tighter doc chunks keep grounding sharp for 4o-mini
-    MAX_REQUEST_TOKENS  = 4500   # ~5 chunks per embed request with headroom
-    DEFAULT_BATCH_LIMIT = 4500   # matches the per-request cap
+    MAX_EMBED_CHARS = 24000   # Safe limit for OpenAI embedding models
 else:
-    # Optimized for Qwen3-4B (256K context window)
-    # See TOKEN_LIMITS_GUIDE.md for rationale
-    MAX_ITEM_TOKENS = 2048                   # Maximum tokens per chunk (balanced for RAG)
-    MAX_REQUEST_TOKENS = 8192                # Maximum tokens per batch request
-    DEFAULT_BATCH_LIMIT = 8192               # Sum of tokens per request
+    MAX_EMBED_CHARS = 2000   # Conservative limit for nomic-embed-text (~2 chars/token worst case)
 
 embed_client = EmbedClientUni(use_openai = USE_OPENAI)
-
-def token_len(txt: str) -> int:
-    """Count tokens using tokenizer."""
-    try:
-        return count_tokens(txt)
-    except RuntimeError:
-        # Fallback to character-based estimation if tokenizer not available
-        return len(txt) // 4
 
 
 def short_hash(text: str, length: int = 8) -> str:
@@ -94,10 +81,41 @@ def uniquify_records(records: List[Dict[str, Any]], already_seen: Set[str]) -> L
     return out
 
 
+def split_by_chars(text: str, max_chars: int) -> List[str]:
+    """
+    Split text into chunks by character count.
+    Tries to split at newlines for cleaner breaks.
+
+    Args:
+        text: Input text string
+        max_chars: Maximum characters per chunk
+
+    Returns:
+        List of text chunks
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_chars
+        if end >= len(text):
+            chunks.append(text[start:])
+            break
+        # Try to find a newline to break at
+        newline_pos = text.rfind('\n', start, end)
+        if newline_pos > start + max_chars // 2:
+            end = newline_pos + 1
+        chunks.append(text[start:end])
+        start = end
+    return chunks
+
+
 def make_retry_splits(
     record: Dict[str, Any],
     already_seen: Set[str],
-    target_tokens: int
+    target_chars: int
 ) -> List[Dict[str, Any]]:
     """
     Split a record into smaller pieces for retry purposes.
@@ -105,13 +123,13 @@ def make_retry_splits(
     Args:
         record: The record to split
         already_seen: Set of IDs already used (to avoid duplicates)
-        target_tokens: Target token count per split
+        target_chars: Target character count per split
 
     Returns:
         List of split records
     """
     text = record["text"]
-    pieces = split_by_tokens(text, target_tokens)
+    pieces = split_by_chars(text, target_chars)
 
     splits = []
     for i, piece in enumerate(pieces):
@@ -132,7 +150,7 @@ def embed_record_with_retry(
     record: Dict[str, Any],
     embed_client,
     already_seen: Set[str],
-    max_item_tokens: int,
+    max_chars: int,
     verbose: bool = True
 ) -> Tuple[Optional[List[float]], Optional[List[Dict[str, Any]]]]:
     """
@@ -147,7 +165,7 @@ def embed_record_with_retry(
         record: Record to embed (must have 'id' and 'text' keys)
         embed_client: Client with embed() method
         already_seen: Set of IDs already processed
-        max_item_tokens: Maximum tokens per item before splitting
+        max_chars: Maximum characters per item before splitting
         verbose: Whether to print warnings
 
     Returns:
@@ -179,8 +197,7 @@ def embed_record_with_retry(
                     detail = ""
 
             if verbose and attempt == 1:
-                token_count = token_len(text)
-                print(f"[WARN] Embed HTTP {status} for {record['id']} (attempt {attempt}/{MAX_EMBED_RETRIES}, tokens={token_count})")
+                print(f"[WARN] Embed HTTP {status} for {record['id']} (attempt {attempt}/{MAX_EMBED_RETRIES}, chars={len(text)})")
                 if detail and len(detail) < 200:
                     print(f"       Detail: {detail}")
 
@@ -204,9 +221,9 @@ def embed_record_with_retry(
             delay = min(delay * 2, RETRY_MAX_DELAY)
 
     # All retries exhausted - try splitting if text is large enough
-    tokens = token_len(text)
-    if tokens > MIN_RETRY_TOKENS:
-        target = max(MIN_RETRY_TOKENS, min(max_item_tokens, max(tokens // 2, MIN_RETRY_TOKENS)))
+    text_len = len(text)
+    if text_len > MIN_RETRY_CHARS:
+        target = max(MIN_RETRY_CHARS, min(max_chars, text_len // 2))
         splits = make_retry_splits(record, already_seen, target)
 
         if splits:
@@ -237,7 +254,7 @@ def get_existing_ids(col) -> set[str]:
 def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
     """
     Embed and add records to ChromaDB with retry logic and progress tracking.
-    Uses embed_record_with_retry for robust error handling.
+    Uses character-based limits for embedding model compatibility.
     """
     if not records:
         if verbose:
@@ -255,10 +272,9 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
 
     batch_records = []
     batch_embeddings = []
-    batch_tokens = 0
 
     def flush_batch():
-        nonlocal total_pending, batch_tokens
+        nonlocal total_pending
         if not batch_records:
             return
         ids = [r["id"] for r in batch_records]
@@ -270,17 +286,16 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
             print(f"Added {len(ids)} records. {total_pending} to go")
         batch_records.clear()
         batch_embeddings.clear()
-        batch_tokens = 0
 
     while queue:
         record = queue.popleft()
         text = record["text"]
-        tl = token_len(text)
+        text_len = len(text)
 
-        # Check if record is too large
-        if tl > MAX_ITEM_TOKENS:
+        # Check if record is too large for embedding model
+        if text_len > MAX_EMBED_CHARS:
             # Split oversized record
-            pieces = split_by_tokens(text, MAX_ITEM_TOKENS // 2)
+            pieces = split_by_chars(text, MAX_EMBED_CHARS // 2)
             for i, piece in enumerate(pieces):
                 new_id = f"{record['id']}#split{i}_{short_hash(piece)}"
                 if new_id in already_seen:
@@ -294,14 +309,10 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
             total_pending -= 1
             continue
 
-        # Flush batch if adding this record would exceed token limit
-        if batch_records and batch_tokens + tl > MAX_REQUEST_TOKENS:
-            flush_batch()
-
         # Embed with retry logic
         try:
             embedding, new_records = embed_record_with_retry(
-                record, embed_client, already_seen, MAX_ITEM_TOKENS, verbose=verbose
+                record, embed_client, already_seen, MAX_EMBED_CHARS, verbose=verbose
             )
         except Exception:
             flush_batch()
@@ -317,7 +328,6 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
         # Add to batch
         batch_records.append(record)
         batch_embeddings.append(embedding)
-        batch_tokens += tl
 
     # Flush remaining batch
     flush_batch()
