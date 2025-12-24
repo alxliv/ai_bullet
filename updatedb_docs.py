@@ -33,9 +33,8 @@ from chromadb_shim import chromadb
 load_dotenv()
 
 # Character-based chunk size for documents
-# mxbai-embed-large has only 512 token context, extremely restrictive
-MAX_CHUNK_CHARS = 350    # Ultra-conservative for mxbai-embed-large
-OVERLAP_CHARS = 35       # Small overlap
+MAX_CHUNK_CHARS = 2000  # Safe size for retrieval (approx 500 tokens)
+OVERLAP_CHARS = 200     # 10% overlap
 
 SUPPORTED_EXTS = {".pdf", ".docx", ".md", ".markdown", ".txt"}
 
@@ -238,7 +237,8 @@ def main():
         print("Usage:")
         print("  python updatedb_docs.py <collection name>")
         print(f"  Valid names are: {valid_names}")
-        return
+        cname='DOCS'
+#        return
     else:
         cname = sys.argv[1]
 

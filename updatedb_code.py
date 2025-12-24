@@ -583,7 +583,7 @@ def main():
         print("Usage:")
         print("  python updatedb_code.py <collection name>")
         print(f"  Valid names are: {valid_names}")
-        cname = "MINCODE"
+        cname = "EXTRAS"
 #        return
     else:
         cname = sys.argv[1]

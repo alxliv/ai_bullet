@@ -21,9 +21,6 @@ RETRY_MAX_DELAY = 5.0      # seconds
 MIN_RETRY_CHARS = 4000      # Minimum chars before we try splitting
 
 # Character-based limits for embedding models
-# mxbai-embed-large: 512 tokens - extremely restrictive (~1 char/token worst case for code)
-# nomic-embed-text: 8192 tokens context - RECOMMENDED for RAG
-# text-embedding-3-small: 8191 tokens context
 # Using conservative limits to handle worst-case tokenization
 if USE_OPENAI:
     MAX_EMBED_CHARS = 24000   # Safe limit for OpenAI embedding models
@@ -274,6 +271,7 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
     batch_records = []
     batch_embeddings = []
     total_records = 0
+    last_print_time = time.time()
 
     def flush_batch():
         nonlocal total_pending
@@ -330,12 +328,18 @@ def embed_and_add(records: List[Dict[str, Any]], col, verbose: bool = True):
             total_pending += len(new_records) - 1
             continue
         total_records +=1
+        if time.time() - last_print_time > 10:
+            if verbose:
+                print(f"Total {total_records} records embedded...")
+            last_print_time = time.time()
+
+
         # Add to batch
         batch_records.append(record)
         batch_embeddings.append(embedding)
         if len(batch_records) >=1000:
             if verbose:
-                print(f"Embedded {total_records} records.")
+                print(f"Total embedded {total_records} records.")
             flush_batch()
 
     # Flush remaining batch

@@ -6,7 +6,7 @@ The [Bullet3 library](https://github.com/bulletphysics/bullet3) was used as a te
 
 AI Bullet can operate in either **online** or **offline** (local) mode.\
 For simplicity, we use the OpenAI "GPT-4o-mini" model for online mode.\
-For offline (local) mode, we use Ollama with the qwen3:4b-instruct-2507-fp16 LLM.
+For offline (local) mode, we use Ollama with the OpenAI GPT-OSS:20b LLM.
 
 ### ⚠️ Important
 Examine **config.py** - all important settings are located there.\
@@ -29,7 +29,7 @@ AI Bullet aims to make your software project more accessible by providing:
 - **Developer Productivity**: Reduce time spent searching through documentation and source code
 - **Learning Support**: Help developers to study your code base through interactive Q&A
 
-The system uses OpenAI or Qwen embedding models and ChromaDB for vector storage, enabling semantic search across multiple types of content including PDFs, documentation files, and C++ source code.
+The system uses OpenAI or Snowflake embedding models and ChromaDB for vector storage, enabling semantic search across multiple types of content including PDFs, documentation files, and C++ source code.
 
 ## Features
 
@@ -38,7 +38,6 @@ The system uses OpenAI or Qwen embedding models and ChromaDB for vector storage,
 - **Score-based fusion** for combining retrieval results from multiple collections
 - **Optional Maximal Marginal Relevance (MMR)** for result diversification
 - **Optional LLM-based re-ranking** using GPT models
-- **Token-budgeted context** building with configurable limits
 - **Dual knowledge modes**: RAG-only (context-based) or full LLM knowledge
 - **Per-user session management** with automatic chat history persistence
 - **Automatic source citation** in Markdown with clickable file links

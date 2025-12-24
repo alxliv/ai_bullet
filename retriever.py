@@ -11,7 +11,6 @@ Features
 - Retrieve from any number of Chroma collections.
 - Reciprocal Rank Fusion (RRF) to merge ranked lists.
 - Optional Maximal Marginal Relevance (MMR) diversification step.
-- Token-budget aware context builder (uses tiktoken if available, else falls back to char budget).
 - Clean dataclasses for results and configuration.
 
 Usage
@@ -58,7 +57,6 @@ else:
     OpenAI = None  # type: ignore[assignment]
     ChatCompletionMessageParam = Dict[str, Any]  # type: ignore[misc]
 
-from tokenizer_utils import count_tokens as token_len_func, truncate as truncate_text
 from embed_client import EmbedClientUni
 
 # ----------------------------
@@ -73,7 +71,7 @@ class RetrieverConfig:
         rrf_b: int = 60,
         mmr_lambda: float = 0.5,
         use_mmr: bool = True,
-        max_context_tokens: int = 16000,  # Optimized for Qwen3-4B (256K context)
+        max_context_tokens: int = 16000,
         max_snippets: int = 12,
         code_lang_key: str = "node_type",
         code_lang_values: Sequence[str] = ("function", "leftover_block"),
@@ -198,8 +196,8 @@ class Hit:
 # ----------------------------
 
 def _token_len(text: str, model: str = "cl100k_base") -> int:
-    """Count tokens using Qwen3 tokenizer (model parameter ignored for compatibility)."""
-    return token_len_func(text)
+    """Count tokens using simple approximation (char count / 3)."""
+    return len(text) // 3
 
 
 def _cosine_to_similarity(distance: float) -> float:
@@ -379,12 +377,8 @@ class Retriever:
         max_tok = getattr(cfg, 'llm_rerank_max_chunk_tokens', 512)
 
         def _trunc(t: str) -> str:
-            try:
-                truncated, _ = truncate_text(t, max_tok)
-                return truncated
-            except RuntimeError:
-                # Fallback if tokenizer not available
-                return t[:max_tok*4]
+            # Fallback if tokenizer not available
+            return t[:max_tok*4]
 
         parts = []
         for h in candidates:

@@ -12,7 +12,6 @@ else:
     EMBEDDING_MODEL = 'snowflake-arctic-embed2'  # Local embedding model served by Ollama
     LLM_DEFAULT_MODEL = "gpt-oss:20b"
     CHROMA_DB_DIR = 'chroma_store_snowflake2/'
-#    CHROMA_DB_DIR = 'chroma_store_qwen3/'
 
 CHROMA_DB_FULL_PATH = os.path.expanduser(CHROMA_DB_DIR)
 
