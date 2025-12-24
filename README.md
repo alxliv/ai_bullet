@@ -157,21 +157,9 @@ uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 - Start asking questions about your project
 
 
-### Knowledge Modes
+### Knowledge Mode
 
-The application supports two distinct modes for generating responses:
-
-#### RAG-Only Mode (default, use_full_knowledge=false)
-- Responses generated **only** from retrieved documentation and code context
-- System prompt restricts LLM to use only provided CONTEXT
-- Best for ensuring factual accuracy from indexed materials
-- LLM will say "I don't know" if information is not in the context
-
-#### Full Knowledge Mode (use_full_knowledge=true)
-- LLM can use its full training knowledge in addition to retrieved context
-- Useful for general questions or when RAG context is insufficient
-- May provide broader answers but with potential for hallucination
-- Context still provided for grounding, but not strictly required
+This application operates in **RAG-only** mode: the LLM is restricted to using only the retrieved documentation and code context when generating answers. Full-knowledge mode has been removed to avoid ungrounded responses; if information is not present in the context, the LLM should indicate it is not known.
 
 ### OS-Agnostic Path System
 
@@ -339,7 +327,6 @@ Chat histories are saved in JSON format with the following structure:
     {
       "role": "assistant",
       "model": "gpt-4o-mini",
-      "use_full_knowledge": false,
       "content": "### DeformableDemo Overview\n\n..."
     }
   ]

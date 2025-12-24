@@ -445,8 +445,8 @@ class Retriever:
 
         return "\n\n".join(context_parts), sources
 
-    def build_messages(self, query: str, context: str, use_full_knowledge: bool = False) -> List[ChatCompletionMessageParam]:
-        system_msg = self.cfg.system_template_full if use_full_knowledge else self.cfg.system_template
+    def build_messages(self, query: str, context: str) -> List[ChatCompletionMessageParam]:
+        system_msg = self.cfg.system_template
         user_msg = self.cfg.user_template.format(query=query, context=context)
         messages: List[ChatCompletionMessageParam] = [
             cast(ChatCompletionMessageParam, {"role": "system", "content": system_msg}),
@@ -454,15 +454,15 @@ class Retriever:
         ]
         return messages
 
-def ask_llm(query: str, retriever: Retriever, model: str = LLM_DEFAULT_MODEL, use_full_knowledge: bool = False):
+def ask_llm(query: str, retriever: Retriever, model: str = LLM_DEFAULT_MODEL):
     # 1) retrieve + build context
     hits = retriever.retrieve(query)
     ctx, sources = retriever.build_context(hits)
-    messages = retriever.build_messages(query, ctx, use_full_knowledge)
+    messages = retriever.build_messages(query, ctx)
 
     if USE_OPENAI:
         # 2) call OpenAI
-        know_str='full knowledge' if use_full_knowledge else 'only context'
+        know_str='only context'
         print(f"Calling OpenAI [{know_str}]...")
         temperature = 1 if ("-mini" in model or "-nano" in model) else 0  # set 1 for mini/nano models, else 0
         oa = retriever._get_openai_client()
@@ -476,7 +476,7 @@ def ask_llm(query: str, retriever: Retriever, model: str = LLM_DEFAULT_MODEL, us
         answer = resp.choices[0].message.content
     else:
         # 2) call Ollama
-        know_str='full knowledge' if use_full_knowledge else 'only context'
+        know_str='only context'
         print(f"Calling Ollama [{know_str}]...")
         payload = {
             "model": model,

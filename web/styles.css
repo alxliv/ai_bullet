@@ -241,12 +241,7 @@ h1 {
     cursor: wait;
 }
 
-#useFullKnowledge {
-    width: 16px;
-    height: 16px;
-    cursor: pointer;
-    accent-color: #007acc;
-}
+
 
 .input-group {
     display: flex;

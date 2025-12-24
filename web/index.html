@@ -55,10 +55,7 @@
                     <select id="modelSelect" aria-label="OpenAI model">
                         <option value="" disabled selected>Loading models...</option>
                     </select>
-                    <div class="checkbox-container">
-                        <input type="checkbox" id="useFullKnowledge" aria-label="Use full knowledge">
-                        <label for="useFullKnowledge">Use full knowledge</label>
-                    </div>
+
                     <button id="newChatButton" type="button">New Chat</button>
                 </div>
                 <div class="input-group">
@@ -420,11 +417,7 @@
                     payload.model = selectedModel;
                 }
 
-                // Add use_full_knowledge flag from checkbox
-                const useFullKnowledgeCheckbox = document.getElementById('useFullKnowledge');
-                if (useFullKnowledgeCheckbox) {
-                    payload.use_full_knowledge = useFullKnowledgeCheckbox.checked;
-                }
+
 
                 const endpoint = currentSessionId
                     ? `/chat?session_id=${encodeURIComponent(currentSessionId)}`

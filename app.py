@@ -38,7 +38,7 @@ if USE_OPENAI:
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
-version = "0.2.4"
+version = "0.2.5"
 title="AI-Powered Q & A"
 
 logger = setup_logger()
@@ -448,7 +448,7 @@ def normalize_repo_links(markdown_text: str) -> str:
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _replace, markdown_text)
 
 
-def save_response(session_id: str, model: str, user_message: str, assistant_message: str, use_full_knowledge: bool) -> None:
+def save_response(session_id: str, model: str, user_message: str, assistant_message: str) -> None:
     """Persist a completed user/assistant exchange to disk."""
     session_data = user_sessions.get(session_id)
 
@@ -468,7 +468,6 @@ def save_response(session_id: str, model: str, user_message: str, assistant_mess
         "timestamp": timestamp,
         "role": "assistant",
         "model": model,
-        "use_full_knowledge": use_full_knowledge,
         "content": assistant_message
     })
 
@@ -488,17 +487,12 @@ class ChatRequest(BaseModel):
         default=DEFAULT_MODEL,
         description="Ollama model to use for the response"
     )
-    use_full_knowledge: bool = Field(
-        default=False,
-        description="Use full LLM knowledge instead of only RAG context"
-    )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "message": "What is the derivative of x^2?",
-                "model": "gpt-4o-mini",
-                "use_full_knowledge": False
+                "model": "gpt-4o-mini"
             }
         }
 
@@ -559,7 +553,7 @@ async def index(
             detail="Failed to load frontend"
         )
 
-def complete_response(combined_content: str, model: str, message: str, session_id: Optional[str] = None, use_full_knowledge: bool = False):
+def complete_response(combined_content: str, model: str, message: str, session_id: Optional[str] = None):
     """
     Called when the complete response has been received and accumulated.
     This function receives the full combined content from all chunks.
@@ -568,7 +562,6 @@ def complete_response(combined_content: str, model: str, message: str, session_i
         combined_content: The complete response text from all chunks combined
         model: The model used for generation
         message: The original user message/query
-        use_full_knowledge: Whether full knowledge mode was used
 
     Returns:
         Processed content (with paths converted to web URLs)
@@ -581,7 +574,7 @@ def complete_response(combined_content: str, model: str, message: str, session_i
     normalized_content = normalize_repo_links(combined_content)
 
     if session_id:
-        save_response(session_id, model, message, normalized_content, use_full_knowledge)
+        save_response(session_id, model, message, normalized_content)
     else:
         logger.warning("Session ID missing; skipping chat persistence")
         logger.debug("Normalized content preview: %s", normalized_content[:200])
@@ -603,7 +596,6 @@ async def stream_ollama_response(
     message: str,
     model: str,
     client: OllamaChatClient,
-    use_full_knowledge: bool = False,
     session_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream responses from the local Ollama API using Server-Sent Events format."""
@@ -611,7 +603,7 @@ async def stream_ollama_response(
     try:
         hits = retriever.retrieve(message)
         ctx, _sources = retriever.build_context(hits)
-        messages = retriever.build_messages(message, ctx, use_full_knowledge=use_full_knowledge)
+        messages = retriever.build_messages(message, ctx)
 
         logger.info(f"Opening Ollama response stream for model {model}, context length={len(ctx)} chars")
         start_time = time.perf_counter()
@@ -648,7 +640,6 @@ async def stream_ollama_response(
                 model,
                 message,
                 session_id=session_id,
-                use_full_knowledge=use_full_knowledge,
             )
             final_response = StreamResponse(
                 content=f"\n\n[NORMALIZED_CONTENT]\n{normalized_content}",
@@ -674,7 +665,6 @@ async def stream_openai_response(
     message: str,
     model: str,
     client: OpenAIChatClient,
-    use_full_knowledge: bool = False,
     session_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream responses from OpenAI chat completions via SSE."""
@@ -682,7 +672,7 @@ async def stream_openai_response(
     try:
         hits = retriever.retrieve(message)
         ctx, _sources = retriever.build_context(hits)
-        messages = retriever.build_messages(message, ctx, use_full_knowledge=use_full_knowledge)
+        messages = retriever.build_messages(message, ctx)
 
         logger.info("Opening OpenAI response stream for model %s", model)
         start_time = time.perf_counter()
@@ -719,7 +709,6 @@ async def stream_openai_response(
                 model,
                 message,
                 session_id=session_id,
-                use_full_knowledge=use_full_knowledge,
             )
             final_response = StreamResponse(
                 content=f"\n\n[NORMALIZED_CONTENT]\n{normalized_content}",
@@ -770,14 +759,13 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
     timestamp = datetime.now().strftime("%d_%b_%Y_%H_%M_%S")
     session_data["messages"].append({"timestamp": timestamp, "role": "user", "content": request.message})
 
-    logger.info(f"Chat request: model={request.model}, message_length={len(request.message)}, use_full_knowledge={request.use_full_knowledge}")
+    logger.info(f"Chat request: model={request.model}, message_length={len(request.message)}")
 
     if isinstance(client, OpenAIChatClient):
         stream_gen = stream_openai_response(
             message=request.message,
             model=request.model,
             client=client,
-            use_full_knowledge=request.use_full_knowledge,
             session_id=session_id,
         )
     elif isinstance(client, OllamaChatClient):
@@ -785,7 +773,6 @@ async def chat(request: ChatRequest, session_id: Optional[str] = Query(default=N
             message=request.message,
             model=request.model,
             client=client,
-            use_full_knowledge=request.use_full_knowledge,
             session_id=session_id,
         )
     else:
