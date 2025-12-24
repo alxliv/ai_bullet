@@ -10,6 +10,7 @@ from chromadb_shim import chromadb
 from config import (
     CHROMA_DB_DIR,
     IGNORE_FILES,
+    IGNORE_FOLDERS,
     GLOBAL_RAGDATA_MAP,
     RAGType,
 )
@@ -459,6 +460,31 @@ def extract_chunks_with_treesitter(path, include_comments=True):
 
     return chunks
 
+def should_ignore_folder(path: str, ignore_patterns) -> bool:
+    """
+    Check if a folder should be ignored based on ignore rules.
+    """
+    import fnmatch
+    if not ignore_patterns:
+        return False
+
+    # Normalize path and split into components to check each parent folder
+    path = os.path.normpath(path)
+    parts = path.split(os.sep)
+
+    for part in parts:
+        if not part:
+            continue
+
+        if part in ignore_patterns:
+            return True
+
+        for pattern in ignore_patterns:
+            if '*' in pattern or '?' in pattern:
+                if fnmatch.fnmatch(part, pattern):
+                    return True
+    return False
+
 def should_ignore_file(filename: str, ignore_patterns) -> bool:
     """
     Check if a file should be ignored based on ignore rules.
@@ -516,11 +542,21 @@ def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
     num_folders = 0
     total_files_processed = 0
     total_files_skipped = 0
+    total_folders_skipped = 0
+    max_chunks = 0
+    max_dirpath=''
 
     for dirpath, _, files in os.walk(root_dir):
         print(f"#{num_folders}. walk_repo_and_chunk() path={dirpath}")
-        num_folders += 1
         count = 0
+        num_chunks=0
+
+        if should_ignore_folder(dirpath, IGNORE_FOLDERS):
+            print(f"Skipping ignored folder {dirpath}")
+            total_folders_skipped += 1
+            continue
+
+        num_folders += 1
 
         for name in files:
             # Check if file should be ignored
@@ -531,16 +567,19 @@ def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
 
             # Check if it's a C/C++ file
             if os.path.splitext(name)[1].lower() in CPP_EXTS:
-                if ("b3Chunk.h" in name):
-                    print("b3Chunk!")
-
                 p = os.path.join(dirpath, name)
                 try:
                     chunks = extract_chunks_with_treesitter(p)
                     all_chunks.extend(chunks)
                     count += 1
+                    num_chunks += len(chunks)
                     total_files_processed += 1
-                    print(f"\tFile: {name}, {count} files chunked in this folder ({len(chunks)} chunks)")
+                    print(f"\tFile: {name}, {count} files chunked in this folder {num_chunks} chunks)")
+                    if num_chunks > max_chunks:
+                        max_chunks = num_chunks
+                        max_dirpath = dirpath
+                        print(f"!New max_chunks {max_chunks} was made in {dirpath}")
+
                 except Exception as e:
                     print(f"\t[ERROR] Failed to process {name}: {e}")
                     total_files_skipped += 1
@@ -548,8 +587,8 @@ def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
     print(f"\n=== Summary ===")
     print(f"Folders processed: {num_folders}")
     print(f"Files processed: {total_files_processed}")
-    print(f"Files skipped/ignored: {total_files_skipped}")
-    print(f"Total chunks extracted: {len(all_chunks)}")
+    print(f"Files skipped/ignored: {total_files_skipped}, Folders ignored: {total_folders_skipped}")
+    print(f"Total chunks extracted: {len(all_chunks)}, max_chunks {max_chunks} is in {max_dirpath}")
 
     return all_chunks
 
@@ -583,7 +622,7 @@ def main():
         print("Usage:")
         print("  python updatedb_code.py <collection name>")
         print(f"  Valid names are: {valid_names}")
-        cname = "EXTRAS"
+        cname = "EXAMPLES"
 #        return
     else:
         cname = sys.argv[1]

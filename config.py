@@ -59,6 +59,10 @@ IGNORE_FILES = {
     # "*.test.cpp",         # Ignore all test source files
 }
 
+IGNORE_FOLDERS = {
+    "xx_*",      # ignore all folders that start with xx_
+}
+
 QUERY_EXAMPLES = [
         "Describe DeformableDemo",
         "What value of timeStep is recommended for the integration?",
@@ -68,7 +72,12 @@ QUERY_EXAMPLES = [
         "Describe the constraint solver architecture",
         "Explain struct LuaPhysicsSetup",
         "How to compute the object AABBs?",
-        "What types of constraints are available in Bullet3 and how do I create a hinge joint?"
+        "What types of constraints are available in Bullet3 and how do I create a hinge joint?",
+        "Explain integration using Monte Carlo method (Note: if fails - increase Ollama context, see comment->)," # in app.py
+            # see client.chat_stream(  # type: ignore[call-arg]
+            # model=model,
+            # messages=messages,
+            # options={"num_ctx": 8192}
 ]
 
 

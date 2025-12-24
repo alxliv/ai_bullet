@@ -613,7 +613,7 @@ async def stream_ollama_response(
         ctx, _sources = retriever.build_context(hits)
         messages = retriever.build_messages(message, ctx, use_full_knowledge=use_full_knowledge)
 
-        logger.info("Opening Ollama response stream for model %s", model)
+        logger.info(f"Opening Ollama response stream for model {model}, context length={len(ctx)} chars")
         start_time = time.perf_counter()
         combined_content = ""
 
@@ -621,7 +621,8 @@ async def stream_ollama_response(
 
         async for chunk in client.chat_stream(  # type: ignore[call-arg]
             model=model,
-            messages=messages
+            messages=messages,
+            options={"num_ctx": 8192}
         ):
             if chunk.get("error"):
                 raise RuntimeError(chunk["error"])
