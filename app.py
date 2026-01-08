@@ -38,7 +38,7 @@ if USE_OPENAI:
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
-version = "0.2.5"
+version = "0.2.6"
 title="AI-Powered Q & A"
 
 logger = setup_logger()
