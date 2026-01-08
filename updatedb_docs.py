@@ -198,6 +198,11 @@ def build_records_for_file(path: str) -> List[Dict[str, Any]]:
 
 
 def walk_docs(root_dir: str) -> List[Dict[str, Any]]:
+    # Expand ~ and make an absolute path
+    root_dir = os.path.abspath(os.path.expanduser(root_dir))
+    if not os.path.isdir(root_dir):
+       raise RuntimeError(f"Directory not found: {root_dir}")
+
     all_records: List[Dict[str, Any]] = []
     for dirpath, _, files in os.walk(root_dir):
         for name in files:

@@ -272,7 +272,7 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 app.mount("/static", StaticFiles(directory="web"), name="static")
 
 for name, (raw_path, _rag_type) in GLOBAL_RAGDATA_MAP.items():
-    fs_path = os.path.normpath(os.path.expanduser(raw_path))
+    fs_path = os.path.abspath(os.path.expanduser(raw_path))
     if not os.path.isdir(fs_path):
         logger.warning("Skipping mount for %s (%s not found)", name, fs_path)
         continue

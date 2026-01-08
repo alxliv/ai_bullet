@@ -545,6 +545,9 @@ def walk_repo_and_chunk(root_dir, ignore_files=IGNORE_FILES):
     total_folders_skipped = 0
     max_chunks = 0
     max_dirpath=''
+    root_dir = os.path.abspath(os.path.expanduser(root_dir))
+    if not os.path.isdir(root_dir):
+        raise RuntimeError(f"Directory not found: {root_dir}")
 
     for dirpath, _, files in os.walk(root_dir):
         print(f"#{num_folders}. walk_repo_and_chunk() path={dirpath}")
@@ -622,7 +625,7 @@ def main():
         print("Usage:")
         print("  python updatedb_code.py <collection name>")
         print(f"  Valid names are: {valid_names}")
-        cname = "EXAMPLES"
+        cname = "BASECODE"
 #        return
     else:
         cname = sys.argv[1]

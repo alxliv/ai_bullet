@@ -23,7 +23,7 @@ MIN_RETRY_CHARS = 4000      # Minimum chars before we try splitting
 # Character-based limits for embedding models
 # Using conservative limits to handle worst-case tokenization
 if USE_OPENAI:
-    MAX_EMBED_CHARS = 24000   # Safe limit for OpenAI embedding models
+    MAX_EMBED_CHARS = 12000
 else:
     MAX_EMBED_CHARS = 4000
 

@@ -2,12 +2,12 @@
 import os
 from enum import Enum
 
-USE_OPENAI = False
+USE_OPENAI = True
 
 if USE_OPENAI:
     EMBEDDING_MODEL = 'text-embedding-3-small'  # Or other model like "text-embedding-ada-002"
-    LLM_DEFAULT_MODEL = "gpt-4o-mini"
-    CHROMA_DB_DIR = 'chroma_store_openai/'
+    LLM_DEFAULT_MODEL = "gpt-4o"
+    CHROMA_DB_DIR = 'chroma_store_openai_small/'
 else:
     EMBEDDING_MODEL = 'snowflake-arctic-embed2'  # Local embedding model served by Ollama
     LLM_DEFAULT_MODEL = "gpt-oss:20b"
@@ -22,6 +22,8 @@ class RAGType(str, Enum):
     DOC = "doc"
     SRC = "src"
 
+# For Windows the RAGDATA map would be something like:
+'''
 GLOBAL_RAGDATA_MAP = {
     "BOOKS":    ("D:/AL_KB/rag_data/books",            RAGType.DOC),
     "BASECODE": ("D:/AL_KB/rag_data/sources/basecode", RAGType.SRC),
@@ -34,15 +36,18 @@ GLOBAL_RAGDATA_MAP = {
     "MINCODE": ("D:/AL_KB/rag_data/sources/code_min", RAGType.SRC),
 
 }
+'''
 
-# For posix the RAGDATA map would be something like:
-'''
+# For posix (Linux) the RAGDATA map would be something like:
 GLOBAL_RAGDATA_MAP = {
-    "CODE":     ("~/work/rag_data/bullet3/src",         RAGType.SRC),
-    "EXAMPLES": ("~/work/rag_data/bullet3/examples",    RAGType.SRC),
-    "DOCS":     ("~/work/rag_data/bullet3/docs",        RAGType.DOC)
+    "BOOKS":    ("~/work/rag_data/books",       RAGType.DOC),
+    "ARTICLES": ("~/work/rag_data/articles",    RAGType.DOC),
+    "DOCS":     ("~/work/rag_data/docs",        RAGType.DOC),
+    "BASECODE": ("~/work/rag_data/sources/basecode/",    RAGType.SRC),
+    "EXAMPLES": ("~/work/rag_data/sources/examples/",    RAGType.SRC),
+    "EXTRAS":   ("~/work/rag_data/sources/Extras/",      RAGType.SRC),
+    "TEST":     ("~/work/rag_data/sources/test/",        RAGType.SRC)
 }
-'''
 
 # Files to ignore during code processing (updatedb_code.py)
 # Supports exact filenames and wildcard patterns
